@@ -1,1 +1,3 @@
 # minireason
+
+# controllable reasoning CoT
