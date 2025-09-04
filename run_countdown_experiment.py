@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
 import datetime
-from tqdm import tqdm # For progress bars
+from tqdm import tqdm
 
 # Set matplotlib backend for headless servers to prevent crashes.
 import matplotlib
@@ -143,21 +143,25 @@ def _gen_chunk(args):
 
 def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
     """Generates a dataset in parallel with a progress bar."""
-    n_workers = n_workers or min(cpu_count(), 32)
+    ## FIX ##: Add smarter worker capping for efficiency on small sample runs.
+    n_workers = min(n_workers or cpu_count(), max(1, num_samples), 32)
     
-    per_worker = num_samples // n_workers
-    extras = num_samples % n_workers
+    ## FIX ##: Split work into more, smaller tasks for a smoother progress bar.
+    granularity = 4
+    target_tasks = min(n_workers * granularity, num_samples)
+    per_task = max(1, num_samples // target_tasks)
+    extras = num_samples % target_tasks
     tasks = []
-    for i in range(n_workers):
-        chunk_size = per_worker + (1 if i < extras else 0)
+    for i in range(target_tasks):
+        chunk_size = per_task + (1 if i < extras else 0)
         tasks.append((chunk_size, num_sources, seed + 1000 * i))
 
-    print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers...")
+    print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers ({len(tasks)} tasks)...")
     
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
     with Pool(processes=n_workers) as pool:
-        # Use imap_unordered and tqdm for a real-time progress bar.
-        pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks), total=len(tasks), desc="Generating Chunks")
+        ## FIX ##: Force tqdm to display to show progress even when stdout is redirected.
+        pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks), total=len(tasks), desc="Generating Chunks", dynamic_ncols=True, mininterval=0.5, disable=False)
         for i, o, a, rs, rp, st in pbar:
             ins += i; outs += o; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
 
