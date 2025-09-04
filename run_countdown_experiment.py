@@ -1,11 +1,23 @@
 # run_countdown_experiment.py
-import math, random, itertools, time, sys, bisect, re, copy
+import math, random, itertools, time, sys, bisect, re, copy, os
 from collections import defaultdict, deque
+from typing import Dict
+from multiprocessing import Pool, cpu_count
+
+## FIX ##: Set thread env vars *before* importing torch for maximum reliability.
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["MKL_NUM_THREADS"] = "8"
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
-from typing import Dict
+import datetime
+
+## FIX ##: Set matplotlib backend for headless servers to prevent crashes.
+import matplotlib
+os.environ.setdefault("MPLBACKEND","Agg"); matplotlib.use(os.environ["MPLBACKEND"])
+import matplotlib.pyplot as plt
 
 # =========================
 # Logging Utility
@@ -99,17 +111,16 @@ def steps_to_program(solution_steps, target_value):
         return " ".join(out)
     return None
 
-def generate_countdown_data(num_samples, num_sources, seed=42):
-    """Generates a dataset of Countdown problems and their program solutions."""
+def _gen_chunk(args):
+    """Helper function for a single worker process to generate a chunk of data."""
+    chunk_samples, num_sources, seed = args
     random.seed(seed)
     solver = CountdownSolver()
-    inputs, outputs = [], []
-    max_attempts = max(2000, 200 * num_samples)
-    attempts, rejects_solver, rejects_program = 0, 0, 0
-    solved_steps = []
-    
-    print(f"Generating {num_samples} samples for {num_sources}-number problems (seed={seed})...")
-    while len(inputs) < num_samples and attempts < max_attempts:
+    inputs, outputs, solved_steps = [], [], []
+    attempts = rejects_solver = rejects_program = 0
+    max_attempts = max(4000, 400 * chunk_samples)
+
+    while len(inputs) < chunk_samples and attempts < max_attempts:
         attempts += 1
         small = [random.randint(1, 10) for _ in range(num_sources - 2)]
         large = [random.choice([25, 50, 75, 100]) for _ in range(2)]
@@ -118,28 +129,45 @@ def generate_countdown_data(num_samples, num_sources, seed=42):
         target = random.randint(101, 999)
 
         steps = solver.solve(source_numbers, target, max_depth=num_sources - 1)
-        if steps is None:
-            rejects_solver += 1
-            continue
-        
+        if steps is None: rejects_solver += 1; continue
         program = steps_to_program(steps, target)
-        if program is None:
-            rejects_program += 1
-            continue
-        
+        if program is None: rejects_program += 1; continue
+
         solved_steps.append(len(steps))
         map_str = " ".join([f"n{i+1}={v}" for i, v in enumerate(source_numbers)])
         inputs.append(f"IN: {source_numbers} TGT: {target} MAP: {map_str}")
         outputs.append(program)
-        if len(inputs) > 0 and len(inputs) % 100 == 0:
-            print(f"  ... {len(inputs)} / {num_samples} generated.")
+
+    return inputs, outputs, attempts, rejects_solver, rejects_program, solved_steps
+
+def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
+    """Generates a dataset in parallel using a pool of worker processes."""
+    n_workers = n_workers or min(cpu_count(), 32)
     
-    acc_rate = 100.0 * len(inputs) / max(1, attempts)
-    avg_steps = sum(solved_steps) / max(1, len(solved_steps))
-    print(f"Generated {len(inputs)} samples from {attempts} attempts ({acc_rate:.1f}% acceptance).")
-    ## FIX ##: Add more detailed logging clarity for generator stats.
-    print(f"  Rejects: solver={rejects_solver}, program={rejects_program}. Avg steps: {avg_steps:.2f}.")
-    return inputs, outputs
+    per_worker = num_samples // n_workers
+    extras = num_samples % n_workers
+    tasks = []
+    for i in range(n_workers):
+        chunk_size = per_worker + (1 if i < extras else 0)
+        tasks.append((chunk_size, num_sources, seed + 1000 * i))
+
+    print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers...")
+    with Pool(processes=n_workers) as pool:
+        results = pool.map(_gen_chunk, tasks)
+
+    ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
+    for i, o, a, rs, rp, st in results:
+        ins += i; outs += o; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
+
+    acc_rate = 100.0 * len(ins) / max(1, total_attempts)
+    avg_steps = sum(steps_all) / max(1, len(steps_all))
+    print(f"Generated {len(ins):,} samples from {total_attempts:,} total attempts ({acc_rate:.1f}% acceptance).")
+    print(f"  Total Rejects: solver={total_rej_s:,}, program={total_rej_p:,}. Avg steps: {avg_steps:.2f}.")
+    
+    if len(ins) < num_samples:
+        print(f"Warning: Underfilled. Generated {len(ins):,}/{num_samples:,} samples.")
+    return ins[:num_samples], outs[:num_samples]
+
 
 # =========================
 # Tokenizer
@@ -183,7 +211,7 @@ class Tokenizer:
         return " ".join(out)
 
 # =========================
-# Execution-Based Metrics Helpers
+# Execution & Plotting Helpers
 # =========================
 def parse_prompt_meta(prompt_text:str):
     """Extracts the target value and number mappings from a prompt string."""
@@ -228,7 +256,9 @@ inference_mode = getattr(torch, "inference_mode", torch.no_grad)
 @inference_mode()
 def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batches=4):
     """Evaluates the model on Program Exact Match and Answer Accuracy."""
-    model.eval()
+    model_to_eval = model.module if isinstance(model, nn.DataParallel) else model
+    model_to_eval.eval()
+    
     n_prog_em, n_ans_ok, n = 0, 0, 0
     bad_gold_prints = 0
     it = iter(val_loader)
@@ -246,8 +276,7 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
             prompt_ids = [t for t in ids[:sep_idx+1] if t != tok.pad_id]
             tgt_text = tok.decode(ids[sep_idx+1:])
             
-            gen_ids = sample_one(model, tok, prompt_ids, max_out, device)
-            ## FIX ##: Add a robustness guard against empty generation.
+            gen_ids = sample_one(model_to_eval, tok, prompt_ids, max_out, device)
             if not gen_ids:
                 continue
             gen_text = tok.decode(gen_ids)
@@ -277,6 +306,31 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
         program_em=n_prog_em / n,
         answer_acc=n_ans_ok / n,
     )
+
+def plot_training_results(history, filename="countdown_training_plot.png"):
+    """Plots training and validation loss and accuracy curves."""
+    epochs = range(1, len(history['train_loss']) + 1)
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    
+    ax1.plot(epochs, history['train_loss'], 'bo-', label='Training Loss')
+    ax1.plot(epochs, history['val_loss'], 'ro-', label='Validation Loss')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Training and Validation Loss')
+    ax1.legend()
+    ax1.grid(True)
+    
+    ax2.plot(epochs, [a * 100 for a in history['train_acc']], 'bo-', label='Training Accuracy')
+    ax2.plot(epochs, [a * 100 for a in history['val_acc']], 'ro-', label='Validation Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy (%)')
+    ax2.set_title('Training and Validation Accuracy')
+    ax2.legend()
+    ax2.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f"\nTraining plot saved to {filename}")
 
 # =========================
 # Model & Training
@@ -445,9 +499,15 @@ def main():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+    torch.set_num_threads(8)
+
     config = dict(
-        num_sources=4, num_samples=1000, d_model=128, n_heads=4, n_layers=4,
-        lr=3e-4, weight_decay=0.01, batch_size=128, epochs=10,
+        num_sources=4, num_samples=100000, 
+        d_model=128, n_heads=4, n_layers=4,
+        lr=3e-4, weight_decay=0.01, 
+        batch_size=1024, 
+        epochs=1000,
+        patience=20
     )
     
     mi, mo, ml = compute_lengths(config['num_sources'])
@@ -456,9 +516,6 @@ def main():
     t0 = time.time()
     # --- Data Prep ---
     ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=42)
-    if len(ins) < config['num_samples']:
-        print("Warning: Low acceptance rate. Re-running data generation with new seed.")
-        ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=43)
     
     if len(ins) < config['num_samples']:
         raise RuntimeError("Data generation failed to produce enough samples. Increase max_attempts or relax constraints.")
@@ -483,22 +540,28 @@ def main():
         raise RuntimeError("Empty train or validation set. Increase num_samples.")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    loader_args = {'batch_size': config['batch_size'], 'num_workers': 2, 'persistent_workers': True, 'pin_memory': True} if device.type=='cuda' else {'batch_size': config['batch_size']}
+    loader_args = {'batch_size': config['batch_size'], 'num_workers': 8, 'persistent_workers': True, 'pin_memory': True} if device.type=='cuda' else {'batch_size': config['batch_size']}
     
-    ## FIX ##: Pass a generator to the training loader for fully reproducible shuffling.
     train_loader = DataLoader(tr, shuffle=True, drop_last=True, generator=g, **loader_args)
     val_loader = DataLoader(va, shuffle=False, **loader_args)
 
     # --- Model and Optimizer ---
     model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], max_len, tok.pad_id).to(device)
     
-    ## FIX ##: Add optional torch.compile for significant speedup on PyTorch >= 2.0.
-    try:
-        model = torch.compile(model)
-        print("Model compiled successfully (PyTorch 2.0+).")
-    except Exception:
-        print("Could not compile model (PyTorch < 2.0 or other issue).")
-        pass
+    n_gpus = torch.cuda.device_count()
+    use_compile = True
+    if n_gpus > 1:
+        print(f"Using {n_gpus} GPUs via DataParallel.")
+        model = nn.DataParallel(model)
+        use_compile = False
+
+    if use_compile:
+        try:
+            model = torch.compile(model)
+            print("Model compiled successfully (PyTorch 2.0+).")
+        except Exception:
+            print("Could not compile model (PyTorch < 2.0 or other issue).")
+            pass
 
     decay_params, no_decay_params, seen = [], [], set()
     for name, p in model.named_parameters():
@@ -512,63 +575,111 @@ def main():
         else:
             decay_params.append(p)
     
-    assert all(p not in no_decay_params for p in decay_params)
-    
+    decay_ids = {id(p) for p in decay_params}
+    no_decay_ids = {id(p) for p in no_decay_params}
+    assert decay_ids.isdisjoint(no_decay_ids), "Same parameter found in both decay and no_decay groups."
+
     optim_groups = [
         {'params': decay_params, 'weight_decay': config['weight_decay']},
         {'params': no_decay_params, 'weight_decay': 0.0}
     ]
     opt = torch.optim.AdamW(optim_groups, lr=config['lr'])
 
-    print(f"\nModel: {sum(p.numel() for p in model.parameters() if p.requires_grad):,} params")
-    print(f"Vocab: {tok.vocab_size} | Max len: {max_len} (pre={mi}, post={mo})")
-    
+    # --- Experimental Settings Printout ---
+    print("\n" + "="*50)
+    print(f"{'Run Configuration':^50}")
+    print("="*50)
+    print(f"{'Python Version:':<25} {sys.version.split()[0]}")
+    print(f"{'PyTorch Version:':<25} {torch.__version__}")
+    print(f"{'Using GPUs:':<25} {n_gpus}")
+    print("-" * 50)
+    print(f"{'Dataset Size:':<25} {config['num_samples']:,} samples")
+    print(f"{'Problem Type:':<25} {config['num_sources']}-number Countdown")
+    print(f"{'Vocabulary Size:':<25} {tok.vocab_size} tokens")
+    print("-" * 50)
+    print(f"{'Model Parameters:':<25} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} total")
+    print(f"{'Dimensions (d_model):':<25} {config['d_model']}")
+    print(f"{'Attention Heads:':<25} {config['n_heads']}")
+    print(f"{'Number of Layers:':<25} {config['n_layers']}")
+    print(f"{'Max Sequence Length:':<25} {max_len} (pre={mi}, post={mo})")
+    print("-" * 50)
+    print(f"{'Epochs:':<25} {config['epochs']} (patience={config['patience']})")
+    print(f"{'Global Batch Size:':<25} {config['batch_size']}")
+    print(f"{'Batch Size per GPU:':<25} {config['batch_size'] // n_gpus if n_gpus > 0 else config['batch_size']}")
+    print(f"{'Learning Rate:':<25} {config['lr']}")
+    print(f"{'Weight Decay:':<25} {config['weight_decay']}")
+    print("="*50 + "\n")
+
     # --- Training Loop ---
     print("Training...")
-    best_val_loss, best_model_state = float('inf'), None
+    history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+    best_val_loss = float('inf')
+    patience_counter = 0
+    train_start_time = time.time()
+    
     for ep in range(config['epochs']):
         tr_acc, tr_loss = train_one_epoch(model, opt, train_loader, device, tok.sep_id, tok.pad_id)
         va_acc, va_loss = validate(model, val_loader, device, tok.sep_id, tok.pad_id)
-        print(f"Epoch {ep+1:02d} | Train loss {tr_loss:.4f} acc {tr_acc*100:.2f}% | Val loss {va_loss:.4f} acc {va_acc*100:.2f}%")
+        
+        history['train_loss'].append(tr_loss)
+        history['val_loss'].append(va_loss)
+        history['train_acc'].append(tr_acc)
+        history['val_acc'].append(va_acc)
+        
+        elapsed_time = time.time() - train_start_time
+        epochs_left = config['epochs'] - (ep + 1)
+        time_per_epoch = elapsed_time / (ep + 1)
+        eta_seconds = epochs_left * time_per_epoch
+        elapsed_str = str(datetime.timedelta(seconds=int(elapsed_time)))
+        eta_str = str(datetime.timedelta(seconds=int(eta_seconds)))
+
+        print(f"Epoch {ep+1:04d} | Train loss {tr_loss:.4f} acc {tr_acc*100:.2f}% | Val loss {va_loss:.4f} acc {va_acc*100:.2f}% | Elapsed: {elapsed_str} | ETA: {eta_str}")
         
         if va_loss < best_val_loss:
             best_val_loss = va_loss
-            # If using torch.compile, need to get the original model's state_dict
-            state_to_save = model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()
-            ## FIX ##: Save the config alongside the model state for full reproducibility.
-            torch.save({
-                "state": copy.deepcopy(state_to_save),
-                "config": config
-            }, "best_model.pt")
+            patience_counter = 0
+            model_to_save = model.module if isinstance(model, nn.DataParallel) else model
+            state_to_save = model_to_save._orig_mod.state_dict() if hasattr(model_to_save, '_orig_mod') else model_to_save.state_dict()
+            torch.save({ "state": copy.deepcopy(state_to_save), "config": config }, "best_model.pt")
             print(f"  -> New best val loss: {best_val_loss:.4f}. Checkpoint saved.")
+        else:
+            patience_counter += 1
+            if patience_counter >= config['patience']:
+                print(f"Validation loss has not improved for {config['patience']} epochs. Stopping early.")
+                break
+
+    # --- Plotting ---
+    plot_training_results(history)
 
     # --- Final Evaluation ---
-    if best_val_loss < float('inf'):
-        print("\nLoading best model for final evaluation...")
-        checkpoint = torch.load("best_model.pt")
-        # Handle both compiled and non-compiled model loading
-        if hasattr(model, '_orig_mod'):
-            model._orig_mod.load_state_dict(checkpoint['state'])
-        else:
-            model.load_state_dict(checkpoint['state'])
+    print("\nLoading best model for final evaluation...")
+    checkpoint = torch.load("best_model.pt", map_location=device)
     
-    metrics = evaluate_program_metrics(model, tok, val_loader, device, config['max_output_len'], max_batches=8)
+    final_model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], max_len, tok.pad_id).to(device)
+    final_model.load_state_dict(checkpoint['state'])
+    
+    metrics = evaluate_program_metrics(final_model, tok, val_loader, device, config['max_output_len'], max_batches=16)
     print(f"\nProgram EM: {metrics['program_em']*100:.2f}% | "
           f"Answer Acc: {metrics['answer_acc']*100:.2f}% "
           f"on {metrics['samples']} val samples.")
 
-    # --- Inference Example ---
-    x_sample, _ = next(iter(val_loader))
-    ids = x_sample[0].tolist()
-    sep_idx = ids.index(tok.sep_id)
-    prompt_ids = [t for t in ids[:sep_idx+1] if t != tok.pad_id]
-    gen_ids = sample_one(model, tok, prompt_ids, config['max_output_len'], device)
-    
-    print("\n--- Inference Example ---")
-    print("Problem:    ", tok.decode(prompt_ids).replace(' SEP', ''))
-    print("True Sol:   ", tok.decode([t for t in ids[sep_idx+1:] if t != tok.pad_id]))
-    print("Generated:  ", tok.decode(gen_ids))
-    print(f"\nDone in {time.time()-t0:.1f}s")
+    # --- Inference Examples ---
+    print("\n--- Inference Examples ---")
+    val_iter = iter(val_loader)
+    x_batch, _ = next(val_iter)
+    for i in range(min(10, x_batch.size(0))):
+        print(f"\n--- Example #{i+1} ---")
+        ids = x_batch[i].tolist()
+        sep_idx = ids.index(tok.sep_id)
+        prompt_ids = [t for t in ids[:sep_idx+1] if t != tok.pad_id]
+        gen_ids = sample_one(final_model, tok, prompt_ids, config['max_output_len'], device)
+        
+        print("Problem:    ", tok.decode(prompt_ids).replace(' SEP', ''))
+        print("True Sol:   ", tok.decode([t for t in ids[sep_idx+1:] if t != tok.pad_id]))
+        print("Generated:  ", tok.decode(gen_ids))
+
+    print(f"\nTotal runtime: {str(datetime.timedelta(seconds=int(time.time()-t0)))}")
+
 
 if __name__ == "__main__":
     with Logger('run_countdown_experiment.log'):
