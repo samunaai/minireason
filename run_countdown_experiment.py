@@ -4,7 +4,7 @@ from collections import defaultdict, deque
 from typing import Dict
 from multiprocessing import Pool, cpu_count
 
-## FIX ##: Set thread env vars *before* importing torch for maximum reliability.
+# Set thread env vars *before* importing torch for maximum reliability.
 os.environ["OMP_NUM_THREADS"] = "8"
 os.environ["MKL_NUM_THREADS"] = "8"
 
@@ -13,8 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
 import datetime
+from tqdm import tqdm # For progress bars
 
-## FIX ##: Set matplotlib backend for headless servers to prevent crashes.
+# Set matplotlib backend for headless servers to prevent crashes.
 import matplotlib
 os.environ.setdefault("MPLBACKEND","Agg"); matplotlib.use(os.environ["MPLBACKEND"])
 import matplotlib.pyplot as plt
@@ -141,7 +142,7 @@ def _gen_chunk(args):
     return inputs, outputs, attempts, rejects_solver, rejects_program, solved_steps
 
 def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
-    """Generates a dataset in parallel using a pool of worker processes."""
+    """Generates a dataset in parallel with a progress bar."""
     n_workers = n_workers or min(cpu_count(), 32)
     
     per_worker = num_samples // n_workers
@@ -152,12 +153,13 @@ def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
         tasks.append((chunk_size, num_sources, seed + 1000 * i))
 
     print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers...")
-    with Pool(processes=n_workers) as pool:
-        results = pool.map(_gen_chunk, tasks)
-
+    
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
-    for i, o, a, rs, rp, st in results:
-        ins += i; outs += o; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
+    with Pool(processes=n_workers) as pool:
+        # Use imap_unordered and tqdm for a real-time progress bar.
+        pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks), total=len(tasks), desc="Generating Chunks")
+        for i, o, a, rs, rp, st in pbar:
+            ins += i; outs += o; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
 
     acc_rate = 100.0 * len(ins) / max(1, total_attempts)
     avg_steps = sum(steps_all) / max(1, len(steps_all))
