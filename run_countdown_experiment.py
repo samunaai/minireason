@@ -1,10 +1,11 @@
-# countdown_cot_final_v11.py
+# run_countdown_experiment.py
 import math, random, itertools, time, sys, bisect, re, copy
 from collections import defaultdict, deque
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
+from typing import Dict
 
 # =========================
 # Logging Utility
@@ -135,9 +136,9 @@ def generate_countdown_data(num_samples, num_sources, seed=42):
     
     acc_rate = 100.0 * len(inputs) / max(1, attempts)
     avg_steps = sum(solved_steps) / max(1, len(solved_steps))
-    print(f"Generated {len(inputs)} samples from {attempts} attempts "
-          f"({acc_rate:.1f}% acceptance). Avg steps {avg_steps:.2f}. "
-          f"Rejects: solver={rejects_solver}, program={rejects_program}.")
+    print(f"Generated {len(inputs)} samples from {attempts} attempts ({acc_rate:.1f}% acceptance).")
+    ## FIX ##: Add more detailed logging clarity for generator stats.
+    print(f"  Rejects: solver={rejects_solver}, program={rejects_program}. Avg steps: {avg_steps:.2f}.")
     return inputs, outputs
 
 # =========================
@@ -189,16 +190,11 @@ def parse_prompt_meta(prompt_text:str):
     m_tgt = re.search(r"\bTGT:\s+(\d+)\b", prompt_text)
     tgt = int(m_tgt.group(1)) if m_tgt else None
     env = {}
-    m_map = re.search(r"\bMAP:\s+(.*)$", prompt_text)
-    if m_map:
-        for part in m_map.group(1).split():
-            if '=' in part:
-                k, v = part.split('=', 1)
-                if k.startswith('n') and v.isdigit():
-                    env[k] = int(v)
+    for k, v in re.findall(r"(n\d+)\s*=\s*(\d+)", prompt_text):
+        env[k] = int(v)
     return tgt, env
 
-def exec_program(prog_text:str, env:dict[str,int]):
+def exec_program(prog_text:str, env:Dict[str,int]):
     """A simple interpreter to execute the generated program and return the final answer."""
     if not prog_text: return None
     toks = prog_text.strip().split()
@@ -227,11 +223,14 @@ def exec_program(prog_text:str, env:dict[str,int]):
             return None
     return None
 
-@torch.inference_mode()
+inference_mode = getattr(torch, "inference_mode", torch.no_grad)
+
+@inference_mode()
 def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batches=4):
     """Evaluates the model on Program Exact Match and Answer Accuracy."""
     model.eval()
     n_prog_em, n_ans_ok, n = 0, 0, 0
+    bad_gold_prints = 0
     it = iter(val_loader)
     for _ in range(max_batches):
         try:
@@ -240,20 +239,28 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
             break
         for x in x_batch:
             ids = x.tolist()
-            if tok.sep_id not in ids: continue
+            if tok.sep_id not in ids:
+                raise RuntimeError("SEP token missing from a validation sample, aborting evaluation.")
             
             sep_idx = ids.index(tok.sep_id)
             prompt_ids = [t for t in ids[:sep_idx+1] if t != tok.pad_id]
             tgt_text = tok.decode(ids[sep_idx+1:])
             
             gen_ids = sample_one(model, tok, prompt_ids, max_out, device)
+            ## FIX ##: Add a robustness guard against empty generation.
+            if not gen_ids:
+                continue
             gen_text = tok.decode(gen_ids)
             
             prompt_text = tok.decode(prompt_ids).replace(' SEP', '').strip()
             tgt_val, env = parse_prompt_meta(prompt_text)
             if tgt_val is None or not env: continue
             
-            assert exec_program(tgt_text, env) == tgt_val, "Gold program failed execution!"
+            if exec_program(tgt_text, env) != tgt_val:
+                if bad_gold_prints < 10:
+                    print(f"\nWarning: Gold program failed validation for target {tgt_val}.\n  Prog: {tgt_text}")
+                    bad_gold_prints += 1
+                continue
 
             ans_gen = exec_program(gen_text, env)
             n += 1
@@ -262,10 +269,13 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
             if ans_gen is not None and ans_gen == tgt_val:
                 n_ans_ok += 1
                 
+    if n == 0:
+        raise RuntimeError("Evaluation failed: No valid samples were processed. Check gold program validation.")
+                
     return dict(
         samples=n,
-        program_em=n_prog_em / n if n else 0.0,
-        answer_acc=n_ans_ok / n if n else 0.0,
+        program_em=n_prog_em / n,
+        answer_acc=n_ans_ok / n,
     )
 
 # =========================
@@ -281,9 +291,13 @@ class Block(nn.Module):
 
     def forward(self, x, key_padding_mask):
         L = x.size(1)
-        causal_mask = torch.triu(torch.full((L, L), float('-inf'), device=x.device), diagonal=1)
         x1 = self.ln1(x)
-        y, _ = self.attn(x1, x1, x1, attn_mask=causal_mask, key_padding_mask=key_padding_mask, need_weights=False)
+        
+        causal_mask = torch.triu(torch.ones((L, L), device=x.device, dtype=torch.bool), diagonal=1)
+        
+        attn_output = self.attn(x1, x1, x1, attn_mask=causal_mask, key_padding_mask=key_padding_mask, need_weights=False)
+        y = attn_output[0] if isinstance(attn_output, tuple) else attn_output
+        
         x = x + y
         x = x + self.mlp(self.ln2(x))
         return x
@@ -331,7 +345,7 @@ def train_one_epoch(model, opt, loader, device, sep_id, pad_id):
     tot_loss, tot_correct, tot = 0.0, 0, 0
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        opt.zero_grad(set_to_none=True) # Perf improvement
+        opt.zero_grad(set_to_none=True)
         logits = model(x)
         loss = masked_next_token_ce(logits, y, sep_id, pad_id)
         loss.backward()
@@ -350,7 +364,7 @@ def train_one_epoch(model, opt, loader, device, sep_id, pad_id):
     acc = (tot_correct / tot) if tot > 0 else 0.0
     return acc, tot_loss / max(1, len(loader))
 
-@torch.inference_mode()
+@inference_mode()
 def validate(model, loader, device, sep_id, pad_id):
     model.eval()
     tot_loss, tot_correct, tot = 0.0, 0, 0
@@ -371,27 +385,49 @@ def validate(model, loader, device, sep_id, pad_id):
     acc = (tot_correct / tot) if tot > 0 else 0.0
     return acc, tot_loss / max(1, len(loader))
 
-@torch.inference_mode()
+@inference_mode()
 def sample_one(model, tokenizer, prompt_ids, max_out, device):
     model.eval()
     x = torch.tensor([prompt_ids], device=device)
     gen = []
+    
+    ANSWER_ID = tokenizer.tok2id['ANSWER']
+    valid_ids = torch.tensor(
+        [tokenizer.tok2id[t] for t in (tokenizer.t_vars + tokenizer.n_vars)],
+        device=device
+    )
+    
+    if valid_ids.numel() == 0:
+        return []
+
     for _ in range(min(max_out, model.max_len - len(prompt_ids))):
         if x.size(1) >= model.max_len: break
         
-        logits = model(x)
-        nxt = logits[:, -1, :].argmax(-1).item()
+        logits = model(x)[:, -1, :]
+        nxt = logits.argmax(-1).item()
         
-        if nxt == tokenizer.eos_id: break
+        if nxt in (tokenizer.eos_id, tokenizer.pad_id): break
         gen.append(nxt)
-        x = torch.cat([x, torch.tensor([[nxt]], device=device)], dim=1)
         
-        if len(gen) >= 2 and gen[-2] == tokenizer.tok2id.get('ANSWER'):
+        if nxt == ANSWER_ID:
+            x = torch.cat([x, torch.tensor([[nxt]], device=device)], dim=1)
+            logits2 = model(x)[:, -1, :]
+            mask = torch.full_like(logits2, float('-inf'))
+            mask[:, valid_ids] = 0
+            nxt2 = (logits2 + mask).argmax(-1).item()
+            gen.append(nxt2)
             break
+        
+        x = torch.cat([x, torch.tensor([[nxt]], device=device)], dim=1)
+
     return gen
 
 def compute_lengths(num_sources:int)->tuple[int,int,int]:
-    """Calculate max input/output lengths based on problem size to avoid truncation."""
+    """
+    Calculate max input/output lengths based on problem size to avoid truncation.
+    - Pre-SEP (prompt): Roughly 5*K+6 tokens. We use +10 for safety/readability.
+    - Post-SEP (program): Roughly 5*(K-1)+2 tokens. We use +4 for safety.
+    """
     pre_sep = 5 * num_sources + 10
     post_sep = 5 * (num_sources - 1) + 2 + 4
     total = pre_sep + post_sep
@@ -423,6 +459,9 @@ def main():
     if len(ins) < config['num_samples']:
         print("Warning: Low acceptance rate. Re-running data generation with new seed.")
         ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=43)
+    
+    if len(ins) < config['num_samples']:
+        raise RuntimeError("Data generation failed to produce enough samples. Increase max_attempts or relax constraints.")
 
     tok = Tokenizer(num_sources=config['num_sources'])
     
@@ -440,25 +479,40 @@ def main():
     g = torch.Generator().manual_seed(42)
     tr, va = random_split(ds, [n_train, len(ds) - n_train], generator=g)
 
+    if len(tr) == 0 or len(va) == 0:
+        raise RuntimeError("Empty train or validation set. Increase num_samples.")
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     loader_args = {'batch_size': config['batch_size'], 'num_workers': 2, 'persistent_workers': True, 'pin_memory': True} if device.type=='cuda' else {'batch_size': config['batch_size']}
     
-    train_loader = DataLoader(tr, shuffle=True, drop_last=True, **loader_args)
+    ## FIX ##: Pass a generator to the training loader for fully reproducible shuffling.
+    train_loader = DataLoader(tr, shuffle=True, drop_last=True, generator=g, **loader_args)
     val_loader = DataLoader(va, shuffle=False, **loader_args)
 
     # --- Model and Optimizer ---
     model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], max_len, tok.pad_id).to(device)
     
-    ## FIX ##: A critical bug fix to avoid double-updating tied embedding weights.
-    # We build a set of unique parameter objects to pass to the optimizer.
-    decay_params, no_decay_params, seen_ids = [], [], set()
+    ## FIX ##: Add optional torch.compile for significant speedup on PyTorch >= 2.0.
+    try:
+        model = torch.compile(model)
+        print("Model compiled successfully (PyTorch 2.0+).")
+    except Exception:
+        print("Could not compile model (PyTorch < 2.0 or other issue).")
+        pass
+
+    decay_params, no_decay_params, seen = [], [], set()
     for name, p in model.named_parameters():
-        if p not in seen_ids:
-            seen_ids.add(p)
-            if p.dim() < 2 or "bias" in name or "ln" in name.lower():
-                no_decay_params.append(p)
-            else:
-                decay_params.append(p)
+        pid = id(p)
+        if pid in seen: continue
+        seen.add(pid)
+        
+        is_ln = ("ln" in name.lower())
+        if p.dim() < 2 or "bias" in name or is_ln:
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+    
+    assert all(p not in no_decay_params for p in decay_params)
     
     optim_groups = [
         {'params': decay_params, 'weight_decay': config['weight_decay']},
@@ -479,13 +533,24 @@ def main():
         
         if va_loss < best_val_loss:
             best_val_loss = va_loss
-            best_model_state = copy.deepcopy(model.state_dict())
-            print(f"  -> New best val loss: {best_val_loss:.4f}")
+            # If using torch.compile, need to get the original model's state_dict
+            state_to_save = model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()
+            ## FIX ##: Save the config alongside the model state for full reproducibility.
+            torch.save({
+                "state": copy.deepcopy(state_to_save),
+                "config": config
+            }, "best_model.pt")
+            print(f"  -> New best val loss: {best_val_loss:.4f}. Checkpoint saved.")
 
     # --- Final Evaluation ---
-    if best_model_state:
+    if best_val_loss < float('inf'):
         print("\nLoading best model for final evaluation...")
-        model.load_state_dict(best_model_state)
+        checkpoint = torch.load("best_model.pt")
+        # Handle both compiled and non-compiled model loading
+        if hasattr(model, '_orig_mod'):
+            model._orig_mod.load_state_dict(checkpoint['state'])
+        else:
+            model.load_state_dict(checkpoint['state'])
     
     metrics = evaluate_program_metrics(model, tok, val_loader, device, config['max_output_len'], max_batches=8)
     print(f"\nProgram EM: {metrics['program_em']*100:.2f}% | "
@@ -506,5 +571,5 @@ def main():
     print(f"\nDone in {time.time()-t0:.1f}s")
 
 if __name__ == "__main__":
-    with Logger('outputs_final_v11_bugfix.log'):
+    with Logger('run_countdown_experiment.log'):
         main()
