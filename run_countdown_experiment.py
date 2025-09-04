@@ -143,10 +143,9 @@ def _gen_chunk(args):
 
 def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
     """Generates a dataset in parallel with a progress bar."""
-    ## FIX ##: Add smarter worker capping for efficiency on small sample runs.
-    n_workers = min(n_workers or cpu_count(), max(1, num_samples), 32)
+    ## TWEAK ##: Use up to 64 workers on high-CPU machines.
+    n_workers = min(n_workers or cpu_count(), max(1, num_samples), 64)
     
-    ## FIX ##: Split work into more, smaller tasks for a smoother progress bar.
     granularity = 4
     target_tasks = min(n_workers * granularity, num_samples)
     per_task = max(1, num_samples // target_tasks)
@@ -160,8 +159,8 @@ def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
     
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
     with Pool(processes=n_workers) as pool:
-        ## FIX ##: Force tqdm to display to show progress even when stdout is redirected.
-        pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks), total=len(tasks), desc="Generating Chunks", dynamic_ncols=True, mininterval=0.5, disable=False)
+        ## TWEAK ##: Changed progress bar description for clarity.
+        pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks), total=len(tasks), desc="Generating Sample Batches", dynamic_ncols=True, mininterval=0.5, disable=False)
         for i, o, a, rs, rp, st in pbar:
             ins += i; outs += o; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
 
