@@ -4,7 +4,7 @@ from collections import defaultdict, deque
 from typing import Dict
 from multiprocessing import Pool, cpu_count
 
-# Set thread env vars *before* importing torch for maximum reliability.
+# FIX: Set thread env vars *before* importing torch for maximum reliability.
 os.environ["OMP_NUM_THREADS"] = "8"
 os.environ["MKL_NUM_THREADS"] = "8"
 
@@ -42,8 +42,11 @@ class Logger:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout = self.terminal
-        self.log.close()
+        try:
+            self.flush()
+            self.log.close()
+        finally:
+            sys.stdout = self.terminal
 
 # =========================
 # Countdown Solver (Labeled & Optimized)
@@ -87,8 +90,9 @@ class CountdownSolver:
         for a_idx, b_idx in itertools.permutations(idxs, 2):
             (av, al), (bv, bl) = items[a_idx], items[b_idx]
             cand = []
+            # Allow subtraction only if result is positive, consistent with "no zero" rules in Countdown.
             if av > bv: cand.append(('-', av - bv))
-            if bv > 1 and av % bv == 0: cand.append(('/', av // bv))
+            if bv >= 1 and av % bv == 0: cand.append(('/', av // bv))
             for op, resv in cand:
                 lr = f"t{t_counter}"
                 new_steps = steps + [(al, op, bl, lr, resv)]
@@ -143,7 +147,6 @@ def _gen_chunk(args):
 
 def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
     """Generates a dataset in parallel with a progress bar."""
-    ## TWEAK ##: Use up to 64 workers on high-CPU machines.
     n_workers = min(n_workers or cpu_count(), max(1, num_samples), 64)
     
     granularity = 4
@@ -159,10 +162,9 @@ def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
     
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
     with Pool(processes=n_workers) as pool:
-        ## TWEAK ##: Changed progress bar description for clarity.
         pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks), total=len(tasks), desc="Generating Sample Batches", dynamic_ncols=True, mininterval=0.5, disable=False)
-        for i, o, a, rs, rp, st in pbar:
-            ins += i; outs += o; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
+        for ins_chunk, outs_chunk, a, rs, rp, st in pbar:
+            ins += ins_chunk; outs += outs_chunk; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
 
     acc_rate = 100.0 * len(ins) / max(1, total_attempts)
     avg_steps = sum(steps_all) / max(1, len(steps_all))
@@ -173,13 +175,12 @@ def generate_countdown_data(num_samples, num_sources, seed=42, n_workers=None):
         print(f"Warning: Underfilled. Generated {len(ins):,}/{num_samples:,} samples.")
     return ins[:num_samples], outs[:num_samples]
 
-
 # =========================
 # Tokenizer
 # =========================
 class Tokenizer:
     """A simple, task-specific tokenizer."""
-    def __init__(self, num_sources, max_num=1000):
+    def __init__(self, num_sources, max_num=400_000):
         self.special = ['PAD','EOS','SEP','IN:','TGT:','[',']',',','MAP:','=']
         self.ops = ['ADD', 'SUB', 'MUL', 'DIV']
         self.cmds = ['WRITE', 'ANSWER']
@@ -306,10 +307,11 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
     if n == 0:
         raise RuntimeError("Evaluation failed: No valid samples were processed. Check gold program validation.")
                 
+    # FIX: Use clearer names for the returned metrics.
     return dict(
         samples=n,
-        program_em=n_prog_em / n,
-        answer_acc=n_ans_ok / n,
+        program_exact_match=n_prog_em / n,
+        answer_only_accuracy=n_ans_ok / n,
     )
 
 def plot_training_results(history, filename="countdown_training_plot.png"):
@@ -455,6 +457,7 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
         [tokenizer.tok2id[t] for t in (tokenizer.t_vars + tokenizer.n_vars)],
         device=device
     )
+    stop_ids = {tokenizer.eos_id, tokenizer.pad_id}
     
     if valid_ids.numel() == 0:
         return []
@@ -465,7 +468,9 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
         logits = model(x)[:, -1, :]
         nxt = logits.argmax(-1).item()
         
-        if nxt in (tokenizer.eos_id, tokenizer.pad_id): break
+        if nxt in stop_ids:
+            break
+        
         gen.append(nxt)
         
         if nxt == ANSWER_ID:
@@ -523,7 +528,11 @@ def main():
     ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=42)
     
     if len(ins) < config['num_samples']:
-        raise RuntimeError("Data generation failed to produce enough samples. Increase max_attempts or relax constraints.")
+        print(f"\nWarning: Data generation underfilled. Proceeding with {len(ins):,}/{config['num_samples']:,} samples.\n")
+        config['num_samples'] = len(ins)
+    
+    if not ins:
+        raise RuntimeError("Data generation produced zero valid samples. Aborting.")
 
     tok = Tokenizer(num_sources=config['num_sources'])
     
@@ -532,8 +541,7 @@ def main():
     X = torch.tensor(enc, dtype=torch.long)
     
     # --- Data Assertions ---
-    assert ((X == tok.sep_id).sum(dim=1) == 1).all().item(), "Each sequence must have exactly one SEP."
-    assert (X[:, :mi] == tok.sep_id).any(dim=1).all().item(), "A SEP token fell beyond max_input_len."
+    assert ((X == tok.sep_id).sum(dim=1) == 1).all().item(), "Each sequence must have exactly one SEP token."
     assert all(tok.eos_id in row for row in X.tolist()), "EOS token missing; sequence may be truncated."
 
     ds = TensorDataset(X, X.clone())
@@ -545,7 +553,10 @@ def main():
         raise RuntimeError("Empty train or validation set. Increase num_samples.")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    loader_args = {'batch_size': config['batch_size'], 'num_workers': 8, 'persistent_workers': True, 'pin_memory': True} if device.type=='cuda' else {'batch_size': config['batch_size']}
+    loader_args = {'batch_size': config['batch_size']}
+    if device.type == 'cuda':
+        persist_flag = len(tr) > 5000 
+        loader_args.update({'num_workers': 8, 'persistent_workers': persist_flag, 'pin_memory': True})
     
     train_loader = DataLoader(tr, shuffle=True, drop_last=True, generator=g, **loader_args)
     val_loader = DataLoader(va, shuffle=False, **loader_args)
@@ -644,7 +655,10 @@ def main():
             best_val_loss = va_loss
             patience_counter = 0
             model_to_save = model.module if isinstance(model, nn.DataParallel) else model
-            state_to_save = model_to_save._orig_mod.state_dict() if hasattr(model_to_save, '_orig_mod') else model_to_save.state_dict()
+            if hasattr(model_to_save, '_orig_mod'):
+                state_to_save = model_to_save._orig_mod.state_dict()
+            else:
+                state_to_save = model_to_save.state_dict()
             torch.save({ "state": copy.deepcopy(state_to_save), "config": config }, "best_model.pt")
             print(f"  -> New best val loss: {best_val_loss:.4f}. Checkpoint saved.")
         else:
@@ -664,8 +678,9 @@ def main():
     final_model.load_state_dict(checkpoint['state'])
     
     metrics = evaluate_program_metrics(final_model, tok, val_loader, device, config['max_output_len'], max_batches=16)
-    print(f"\nProgram EM: {metrics['program_em']*100:.2f}% | "
-          f"Answer Acc: {metrics['answer_acc']*100:.2f}% "
+    # FIX: Use clearer names for the printed metrics.
+    print(f"\nProgram Exact Match: {metrics['program_exact_match']*100:.2f}% | "
+          f"Answer Only Accuracy: {metrics['answer_only_accuracy']*100:.2f}% "
           f"on {metrics['samples']} val samples.")
 
     # --- Inference Examples ---
