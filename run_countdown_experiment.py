@@ -307,7 +307,6 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
     if n == 0:
         raise RuntimeError("Evaluation failed: No valid samples were processed. Check gold program validation.")
                 
-    # FIX: Use clearer names for the returned metrics.
     return dict(
         samples=n,
         program_exact_match=n_prog_em / n,
@@ -512,6 +511,9 @@ def main():
     torch.set_num_threads(8)
 
     config = dict(
+        # --- ADDED: Caching flag ---
+        use_cached_data=True,
+        # ---------------------------
         num_sources=4, num_samples=100000, 
         d_model=128, n_heads=4, n_layers=4,
         lr=3e-4, weight_decay=0.01, 
@@ -525,7 +527,30 @@ def main():
 
     t0 = time.time()
     # --- Data Prep ---
-    ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=42)
+    # ADDED: Caching logic
+    ins, outs = [], []
+    if config['use_cached_data']:
+        cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_sources.pt"
+        
+        if os.path.exists(cache_filename):
+            print("\n" + "="*60)
+            print(f"  FOUND CACHE: Loading dataset from '{cache_filename}'")
+            print(f"  ({config['num_samples']:,} samples, {config['num_sources']} sources)")
+            print("="*60 + "\n")
+            
+            data = torch.load(cache_filename)
+            ins, outs = data['ins'], data['outs']
+            
+            if len(ins) < config['num_samples']:
+                print(f"Warning: Cached data ({len(ins):,}) has fewer samples than requested ({config['num_samples']:,}).")
+        else:
+            print(f"Cache file '{cache_filename}' not found. Generating new dataset...")
+            ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=42)
+            print(f"Saving newly generated dataset to '{cache_filename}' for future runs.")
+            torch.save({'ins': ins, 'outs': outs}, cache_filename)
+    else:
+        print("Caching is disabled. Generating fresh dataset for this run only.")
+        ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], seed=42)
     
     if len(ins) < config['num_samples']:
         print(f"\nWarning: Data generation underfilled. Proceeding with {len(ins):,}/{config['num_samples']:,} samples.\n")
@@ -678,7 +703,6 @@ def main():
     final_model.load_state_dict(checkpoint['state'])
     
     metrics = evaluate_program_metrics(final_model, tok, val_loader, device, config['max_output_len'], max_batches=16)
-    # FIX: Use clearer names for the printed metrics.
     print(f"\nProgram Exact Match: {metrics['program_exact_match']*100:.2f}% | "
           f"Answer Only Accuracy: {metrics['answer_only_accuracy']*100:.2f}% "
           f"on {metrics['samples']} val samples.")
