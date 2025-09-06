@@ -516,7 +516,7 @@ def main():
         d_model=128, n_heads=4, n_layers=4,
         lr=3e-4, weight_decay=0.01, 
         # FIX: Reduced batch size to prevent OOM with large vocabulary.
-        batch_size=128, 
+        batch_size=64, 
         epochs=1000,
         patience=20
     )
