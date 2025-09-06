@@ -511,13 +511,12 @@ def main():
     torch.set_num_threads(8)
 
     config = dict(
-        # --- ADDED: Caching flag ---
         use_cached_data=True,
-        # ---------------------------
         num_sources=4, num_samples=100000, 
         d_model=128, n_heads=4, n_layers=4,
         lr=3e-4, weight_decay=0.01, 
-        batch_size=1024, 
+        # FIX: Reduced batch size to prevent OOM with large vocabulary.
+        batch_size=128, 
         epochs=1000,
         patience=20
     )
@@ -527,7 +526,6 @@ def main():
 
     t0 = time.time()
     # --- Data Prep ---
-    # ADDED: Caching logic
     ins, outs = [], []
     if config['use_cached_data']:
         cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_sources.pt"
