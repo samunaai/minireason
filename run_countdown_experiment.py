@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
+import torch.utils.checkpoint as checkpoint
 import datetime
 from tqdm import tqdm
 
@@ -23,34 +24,27 @@ import matplotlib.pyplot as plt
 # =========================
 # CONFIGURATION & HYPERPARAMETERS
 # =========================
-# All key variables are defined here for easy access and modification.
 HPARAMS = {
-    # --- Data Generation ---
-    "num_sources": 6,          # Number of source numbers (e.g., 6 in the TV show)
-    "num_samples": 100000,     # Total number of puzzle samples to generate/load
-    "max_num_vocab": 999,      # The highest number the tokenizer will have in its vocabulary
-    "use_cached_data": True,   # Set to False to force regeneration of the dataset
-
-    # --- Model Architecture ---
-    "d_model": 128,            # Embedding dimension
-    "n_heads": 4,              # Number of attention heads
-    "n_layers": 4,             # Number of transformer blocks
-
-    # --- Training & Optimization ---
-    "epochs": 1000,            # Maximum number of training epochs
-    "patience": 20,            # Epochs to wait for improvement before early stopping
-    "batch_size": 32,          # Number of samples per batch
-    "lr": 3e-4,                # Learning rate
-    "weight_decay": 0.01,      # Weight decay for regularization
-
-    # --- Reproducibility ---
+    "num_sources": 6,
+    "num_samples": 100000,
+    "max_num_vocab": 999,
+    "use_cached_data": True,
+    "small_deck": [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10],
+    "large_deck": [25, 50, 75, 100],
+    "target_range": (100, 999),
+    "d_model": 128,
+    "n_heads": 4,
+    "n_layers": 4,
+    "epochs": 1000,
+    "patience": 20,
+    "batch_size": 32,
+    "lr": 3e-4,
+    "weight_decay": 0.01,
+    "use_gradient_checkpointing": False,
     "seed": 42,
 }
 
-
-# =========================
-# Logging Utility
-# =========================
+# ... (Logger, CountdownSolver, data generation functions remain the same) ...
 class Logger:
     """A simple utility to tee stdout to a log file."""
     def __init__(self, filename="outputs.log"):
@@ -75,10 +69,6 @@ class Logger:
             self.log.close()
         finally:
             sys.stdout = self.terminal
-
-# =========================
-# Countdown Solver
-# =========================
 class CountdownSolver:
     """Finds a step-by-step solution to a Countdown numbers puzzle using a DFS."""
     def __init__(self):
@@ -167,8 +157,8 @@ def steps_to_program(initial_numbers: List[int], solution_steps: List, target_va
 
 def _gen_chunk(args):
     """Helper function for a single worker process to generate a chunk of data."""
-    chunk_samples, num_sources, seed, max_num_for_vocab = args
-    assert num_sources <= 24, "num_sources exceeds the total deck size of 24"
+    chunk_samples, num_sources, seed, max_num_for_vocab, small_deck, large_deck, target_range = args
+    assert num_sources <= (len(small_deck) + len(large_deck)), "num_sources exceeds the total deck size"
     random.seed(seed)
     solver = CountdownSolver()
     inputs, outputs, solved_steps = [], [], []
@@ -178,8 +168,6 @@ def _gen_chunk(args):
     while len(inputs) < chunk_samples and attempts < max_attempts:
         attempts += 1
         
-        small_deck = [1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10]
-        large_deck  = [25, 50, 75, 100]
         min_large = max(0, num_sources - len(small_deck))
         max_large = min(len(large_deck), num_sources)
         num_large = random.randint(min_large, max_large)
@@ -190,7 +178,7 @@ def _gen_chunk(args):
         source_numbers = large + small
         random.shuffle(source_numbers)
         
-        target = random.randint(100, 999)
+        target = random.randint(target_range[0], target_range[1])
 
         if len(source_numbers) > 1 and target in source_numbers:
             continue
@@ -207,14 +195,21 @@ def _gen_chunk(args):
 
     return inputs, outputs, attempts, rejects_solver, rejects_program, solved_steps
 
-def generate_countdown_data(num_samples, num_sources, max_num_for_vocab, seed=42, n_workers=None):
+def generate_countdown_data(config, n_workers=None):
+    num_samples, num_sources = config['num_samples'], config['num_sources']
+    seed, max_num_for_vocab = config['seed'], config['max_num_vocab']
+    small_deck, large_deck = config['small_deck'], config['large_deck']
+    target_range = config['target_range']
+    
     n_workers = min(n_workers or cpu_count(), 64, num_samples)
     granularity = 4
     target_tasks = min(n_workers * granularity, num_samples) if n_workers > 0 else num_samples
     if target_tasks == 0: return [],[]
     per_task = max(1, num_samples // target_tasks)
     extras = num_samples % target_tasks
-    tasks = [(per_task + (1 if i < extras else 0), num_sources, seed + 1000 * i, max_num_for_vocab) for i in range(target_tasks)]
+    tasks = [(per_task + (1 if i < extras else 0), num_sources, seed + 1000 * i, 
+              max_num_for_vocab, small_deck, large_deck, target_range) 
+              for i in range(target_tasks)]
     
     print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers ({len(tasks)} tasks)...")
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
@@ -229,10 +224,6 @@ def generate_countdown_data(num_samples, num_sources, max_num_for_vocab, seed=42
     print(f"  Total Rejects: solver={total_rej_s:,}, program(filter)={total_rej_p:,}. Avg steps: {avg_steps:.2f}.")
     if len(ins) < num_samples: print(f"Warning: Underfilled. Generated {len(ins):,}/{num_samples:,} samples.")
     return ins[:num_samples], outs[:num_samples]
-
-# =========================
-# Tokenizer
-# =========================
 class Tokenizer:
     """A simple, task-specific tokenizer for the new CoT format."""
     def __init__(self, num_sources, max_num=999):
@@ -268,10 +259,6 @@ class Tokenizer:
     def decode(self, ids):
         out = [self.id2tok.get(i, '?') for i in ids if i not in (self._pad, self._eos)]
         return " ".join(out)
-
-# =========================
-# Execution & Plotting Helpers
-# =========================
 def parse_initial_numbers(prompt_text: str) -> Optional[List[int]]:
     match = re.search(r"IN: \[ (.*?) \]", prompt_text)
     if match: return [int(n) for n in match.group(1).split()]
@@ -319,9 +306,7 @@ def verify_stateful_cot(initial_numbers: List[int], target: int, cot_text: str) 
                 final_result == declared_answer and final_result == target)
     except Exception:
         return False
-
 inference_mode = getattr(torch, "inference_mode", torch.no_grad)
-
 @inference_mode()
 def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batches=4):
     """Evaluates the model on three tiers of accuracy."""
@@ -387,7 +372,6 @@ def plot_training_results(history, filename="countdown_training_plot.png"):
 # Model & Training
 # =========================
 class Block(nn.Module):
-    """A single transformer block."""
     def __init__(self, d, h, max_len):
         super().__init__()
         self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
@@ -404,10 +388,10 @@ class Block(nn.Module):
         return x
 
 class DecoderOnly(nn.Module):
-    """A decoder-only transformer model with tied embeddings."""
-    def __init__(self, vocab, d, h, n_layers, max_len, pad_id):
+    def __init__(self, vocab, d, h, n_layers, max_len, pad_id, use_gradient_checkpointing):
         super().__init__()
         self.pad_id = pad_id
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         self.tok = nn.Embedding(vocab, d, padding_idx=pad_id)
         self.pos = nn.Embedding(max_len, d)
         self.blocks = nn.ModuleList([Block(d, h, max_len) for _ in range(n_layers)])
@@ -417,78 +401,95 @@ class DecoderOnly(nn.Module):
         self.max_len = max_len
         self.register_buffer("pos_idx", torch.arange(max_len))
 
-    def forward(self, x):
+    def forward_features(self, x):
         B, L = x.shape
         if L > self.max_len: x = x[:, -self.max_len:]; L = self.max_len
         key_padding_mask = (x == self.pad_id)
         pos_emb = self.pos(self.pos_idx[:L].to(x.device))
         h = self.tok(x) + pos_emb
         h = h.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
-        for blk in self.blocks: h = blk(h, key_padding_mask)
-        return self.head(self.ln_f(h))
+        
+        for blk in self.blocks:
+            if self.use_gradient_checkpointing and self.training:
+                # Wrap the block call in a lambda to handle non-tensor args robustly
+                h = checkpoint.checkpoint(
+                    lambda h_block, mask: blk(h_block, mask),
+                    h, key_padding_mask, use_reentrant=False
+                )
+            else:
+                h = blk(h, key_padding_mask)
+        
+        return self.ln_f(h)
 
-def masked_next_token_ce(logits, targets, sep_id, pad_id, eos_id):
-    B, L, V = logits.shape
-    nxt_logits = logits[:, :-1, :].contiguous()
-    nxt_tgts = targets[:, 1:].contiguous()
+    def forward(self, x):
+        h = self.forward_features(x)
+        return self.head(h)
+
+def compute_masked_loss(model_head, hidden_states, targets, sep_id, pad_id, eos_id):
+    h_for_pred = hidden_states[:, :-1, :].contiguous()
+    t_for_pred = targets[:, 1:].contiguous()
     with torch.no_grad():
         sep_pos = (targets == sep_id).int().argmax(dim=1)
-        idx = torch.arange(L - 1, device=targets.device).unsqueeze(0)
-        mask = ((idx + 1 > sep_pos.unsqueeze(1)) & (nxt_tgts != pad_id) & (nxt_tgts != eos_id)).float()
-    loss = F.cross_entropy(nxt_logits.view(-1, V), nxt_tgts.view(-1), reduction='none').view(B, L - 1)
-    return (loss * mask).sum() / mask.sum().clamp_min(1)
+        idx = torch.arange(t_for_pred.size(1), device=targets.device).unsqueeze(0)
+        mask = (idx + 1 > sep_pos.unsqueeze(1)) & (t_for_pred != pad_id) & (t_for_pred != eos_id)
+    selected_h = h_for_pred[mask]
+    selected_t = t_for_pred[mask]
+    total_supervised = selected_t.size(0)
+    if total_supervised == 0:
+        # Return a graph-connected zero scalar loss if no supervised tokens
+        return hidden_states.sum() * 0.0, 0, 0
+    logits = model_head(selected_h)
+    loss = F.cross_entropy(logits, selected_t)
+    preds = logits.argmax(dim=-1)
+    correct = (preds == selected_t).sum().item()
+    return loss, correct, total_supervised
 
 def train_one_epoch(model, opt, loader, device, tok, scaler):
     model.train()
-    tot_loss, tot_correct, tot = 0.0, 0, 0
+    total_loss, total_correct, total_tokens = 0.0, 0, 0
+    model_to_call = model.module if isinstance(model, nn.DataParallel) else model
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        
         with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type=='cuda'):
-            logits = model(x)
-            loss = masked_next_token_ce(logits, y, tok.sep_id, tok.pad_id, tok.eos_id)
-        
-        opt.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
-        if scaler.is_enabled(): scaler.unscale_(opt)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        scaler.step(opt)
-        scaler.update()
-        
-        tot_loss += loss.item()
-        preds = logits[:, :-1, :].argmax(-1)
-        tgt = y[:, 1:]
-        with torch.no_grad():
-            sep_pos = (y == tok.sep_id).int().argmax(dim=1)
-            idx = torch.arange(tgt.size(1), device=device).unsqueeze(0)
-            mask = (idx + 1 > sep_pos.unsqueeze(1)) & (tgt != tok.pad_id) & (tgt != tok.eos_id)
-            tot_correct += (preds[mask] == tgt[mask]).sum().item()
-            tot += mask.sum().item()
-    acc = (tot_correct / tot) if tot > 0 else 0.0
-    return acc, tot_loss / max(1, len(loader))
+            hidden_states = model_to_call.forward_features(x)
+            loss, correct, n_tokens = compute_masked_loss(
+                model_to_call.head, hidden_states, y, tok.sep_id, tok.pad_id, tok.eos_id
+            )
+        if n_tokens > 0:
+            opt.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            if scaler.is_enabled(): scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(opt)
+            scaler.update()
+            total_loss += loss.item() * n_tokens
+            total_correct += correct
+            total_tokens += n_tokens
+    acc = (total_correct / total_tokens) if total_tokens > 0 else 0.0
+    avg_loss = total_loss / max(1, total_tokens)
+    return acc, avg_loss
 
 @inference_mode()
 def validate(model, loader, device, tok):
     model.eval()
-    tot_loss, tot_correct, tot = 0.0, 0, 0
+    total_loss, total_correct, total_tokens = 0.0, 0, 0
+    model_to_call = model.module if isinstance(model, nn.DataParallel) else model
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
         with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type=='cuda'):
-            logits = model(x)
-            loss = masked_next_token_ce(logits, y, tok.sep_id, tok.pad_id, tok.eos_id)
-        
-        tot_loss += loss.item()
-        preds = logits[:, :-1, :].argmax(-1)
-        tgt = y[:, 1:]
-        sep_pos = (y == tok.sep_id).int().argmax(dim=1)
-        idx = torch.arange(tgt.size(1), device=device).unsqueeze(0)
-        mask = (idx + 1 > sep_pos.unsqueeze(1)) & (tgt != tok.pad_id) & (tgt != tok.eos_id)
-        
-        tot_correct += (preds[mask] == tgt[mask]).sum().item()
-        tot += mask.sum().item()
-    acc = (tot_correct / tot) if tot > 0 else 0.0
-    return acc, tot_loss / max(1, len(loader))
+            hidden_states = model_to_call.forward_features(x)
+            loss, correct, n_tokens = compute_masked_loss(
+                model_to_call.head, hidden_states, y, tok.sep_id, tok.pad_id, tok.eos_id
+            )
+        if n_tokens > 0:
+            total_loss += loss.item() * n_tokens
+            total_correct += correct
+            total_tokens += n_tokens
+    acc = (total_correct / total_tokens) if total_tokens > 0 else 0.0
+    avg_loss = total_loss / max(1, total_tokens)
+    return acc, avg_loss
 
+# ... (sample_one and compute_lengths remain the same) ...
 @inference_mode()
 def sample_one(model, tokenizer, prompt_ids, max_out, device):
     model.eval()
@@ -502,6 +503,7 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
     for _ in range(min(max_out, model.max_len - len(prompt_ids))):
         if x.size(1) >= model.max_len: break
         with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(device.type=='cuda')):
+            # The original `forward` method is still used here for simple inference
             logits = model(x)[:, -1, :]
         nxt = logits.argmax(-1).item()
         if nxt in stop_ids: break
@@ -520,36 +522,28 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
         
         x = torch.cat([x, torch.tensor([[nxt]], device=device)], dim=1)
     return gen
-
 def compute_lengths(num_sources:int)->tuple[int,int,int]:
     """Calculate max input/output lengths based on problem size to avoid truncation."""
     pre_sep = 5 * num_sources + 10
     post_sep = 28 * (num_sources - 1) + 12
     total = pre_sep + post_sep
     return pre_sep, post_sep, total
-
 # =========================
 # Main execution block
 # =========================
 def main():
-    # Set seeds for reproducibility
     random.seed(HPARAMS['seed']); torch.manual_seed(HPARAMS['seed'])
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(HPARAMS['seed'])
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(HPARAMS['seed'])
     torch.backends.cudnn.deterministic = True; torch.backends.cudnn.benchmark = False
     torch.set_num_threads(1)
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
 
-    # Use a local copy of HPARAMS for this run to add dynamic values
     config = HPARAMS.copy()
-    
-    # --- Dynamic Configuration ---
     mi, mo, ml = compute_lengths(config['num_sources'])
     config['max_input_len'], config['max_output_len'], max_len = mi, mo, ml
 
+    # ... (Data loading/generation logic remains the same) ...
     t0 = time.time()
-    # --- Data Prep ---
     ins, outs = [], []
     if config['use_cached_data']:
         cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_sources_stateful_max{config['max_num_vocab']}.pt"
@@ -566,20 +560,19 @@ def main():
         
         if not ins:
             print(f"Generating new dataset (cache miss or invalid)...")
-            ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], config['max_num_vocab'], seed=config['seed'])
+            ins, outs = generate_countdown_data(config)
             print(f"Saving newly generated dataset to '{cache_filename}' for future runs.")
             torch.save({'ins': ins, 'outs': outs}, cache_filename)
     else:
         print("Caching is disabled. Generating fresh dataset for this run only.")
-        ins, outs = generate_countdown_data(config['num_samples'], config['num_sources'], config['max_num_vocab'], seed=config['seed'])
+        ins, outs = generate_countdown_data(config)
     
     if len(ins) < config['num_samples']:
         print(f"\nWarning: Data generation underfilled. Proceeding with {len(ins):,}/{config['num_samples']:,} samples.\n")
         config['num_samples'] = len(ins)
     if not ins: raise RuntimeError("Data generation produced zero valid samples. Aborting.")
-
     tok = Tokenizer(num_sources=config['num_sources'], max_num=config['max_num_vocab'])
-    config['vocab_size'] = tok.vocab_size # Store vocab size for logging
+    config['vocab_size'] = tok.vocab_size
     
     seqs = [f"{inp} SEP {out}" for inp, out in zip(ins, outs)]
     enc = [tok.encode(s, max_len) for s in seqs]
@@ -610,7 +603,11 @@ def main():
     train_loader = DataLoader(tr, shuffle=True, drop_last=True, generator=g, **loader_args)
     val_loader = DataLoader(va, shuffle=False, **loader_args)
 
-    model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], max_len, tok.pad_id).to(device)
+    model = DecoderOnly(
+        tok.vocab_size, config['d_model'], config['n_heads'],
+        config['n_layers'], max_len, tok.pad_id,
+        use_gradient_checkpointing=config['use_gradient_checkpointing']
+    ).to(device)
     
     n_gpus = torch.cuda.device_count()
     if n_gpus > 1: print(f"Using {n_gpus} GPUs via DataParallel."); model = nn.DataParallel(model)
@@ -618,6 +615,7 @@ def main():
         try: model = torch.compile(model); print("Model compiled successfully (PyTorch 2.0+).")
         except Exception: print("Could not compile model (PyTorch < 2.0 or other issue).")
 
+    # ... (Optimizer setup remains the same) ...
     decay_params, no_decay_params, seen = [], [], set()
     for name, p in model.named_parameters():
         pid = id(p)
@@ -630,11 +628,13 @@ def main():
     opt = torch.optim.AdamW(optim_groups, lr=config['lr'])
     scaler = torch.cuda.amp.GradScaler(enabled=False)
 
+
     print(f"\n{'='*50}\n{'Run Configuration':^50}\n{'='*50}")
     print(f"{'PyTorch Version:':<25} {torch.__version__}\n{'Using GPUs:':<25} {n_gpus}\n{'-'*50}")
     print(f"{'Dataset Size:':<25} {config['num_samples']:,} samples\n{'Problem Type:':<25} {config['num_sources']}-number Countdown\n{'Vocabulary Size:':<25} {config['vocab_size']} tokens\n{'-'*50}")
     print(f"{'Model d_model/n_heads/n_layers:':<25} {config['d_model']}/{config['n_heads']}/{config['n_layers']}\n{'Model Parameters:':<25} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} total\n{'Max Sequence Length:':<25} {max_len} (pre={mi}, post={mo})\n{'-'*50}")
-    print(f"{'Epochs:':<25} {config['epochs']} (patience={config['patience']})\n{'Global Batch Size:':<25} {config['batch_size']}\n{'Learning Rate:':<25} {config['lr']}\n{'='*50}\n")
+    print(f"{'Epochs:':<25} {config['epochs']} (patience={config['patience']})\n{'Global Batch Size:':<25} {config['batch_size']}\n{'Learning Rate:':<25} {config['lr']}")
+    print(f"{'Gradient Checkpointing:':<25} {'Enabled' if config['use_gradient_checkpointing'] else 'Disabled'}\n{'='*50}\n")
     
     sdp_context = (torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
                    if torch.cuda.is_available() else contextlib.nullcontext())
@@ -672,8 +672,14 @@ def main():
 
         print("\nLoading best model for final evaluation...")
         checkpoint = torch.load("best_model.pt", map_location=device)
-        final_model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], max_len, tok.pad_id).to(device)
+        final_model = DecoderOnly(
+            tok.vocab_size, config['d_model'], config['n_heads'],
+            config['n_layers'], max_len, tok.pad_id,
+            use_gradient_checkpointing=False
+        ).to(device)
         final_model.load_state_dict(checkpoint['state'])
+        if torch.cuda.device_count() > 1:
+            final_model = nn.DataParallel(final_model)
         
         metrics = evaluate_program_metrics(final_model, tok, val_loader, device, config['max_output_len'], max_batches=16)
         print(f"\n--- Final Evaluation Metrics ---\n"
