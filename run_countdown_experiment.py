@@ -101,7 +101,7 @@ class CountdownSolver:
                 new_steps = steps + [(av, op, bv, resv)]
                 rest = list(items); del rest[b_idx]; del rest[a_idx]
                 bisect.insort(rest, (resv, "t"))
-                if resv == target and len(rest) == 1:
+                if resv == target:
                     self.solution = new_steps
                     return
                 self._dfs(tuple(rest), target, new_steps, memo, max_depth)
@@ -117,7 +117,7 @@ class CountdownSolver:
                 rest = list(items); i, j = sorted((a_idx, b_idx), reverse=True)
                 del rest[i]; del rest[j]
                 bisect.insort(rest, (resv, "t"))
-                if resv == target and len(rest) == 1:
+                if resv == target:
                     self.solution = new_steps
                     return
                 self._dfs(tuple(rest), target, new_steps, memo, max_depth)
@@ -213,8 +213,13 @@ def generate_countdown_data(config, n_workers=None):
     
     print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers ({len(tasks)} tasks)...")
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
-    with Pool(processes=n_workers, initializer=torch.set_num_threads, initargs=(1,)) as pool:
-        pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks, chunksize=2), total=len(tasks), desc="Generating Sample Batches")
+    with Pool(processes=n_workers, initializer=lambda: torch.set_num_threads(1)) as pool:
+        pbar = tqdm(
+            pool.imap_unordered(_gen_chunk, tasks, chunksize=2),
+            total=len(tasks),
+            desc="Generating Sample Batches",
+            file=sys.stdout,
+        )
         for ins_chunk, outs_chunk, a, rs, rp, st in pbar:
             ins += ins_chunk; outs += outs_chunk; total_attempts += a; total_rej_s += rs; total_rej_p += rp; steps_all += st
     
@@ -280,6 +285,7 @@ def verify_stateful_cot(initial_numbers: List[int], target: int, cot_text: str) 
             return (declared_answer is not None and declared_answer == target and 
                     len(initial_numbers) == 1 and initial_numbers[0] == target)
 
+        last_res = None
         for before_str, n1_str, op, n2_str, res_str, after_str in steps:
             stated_before = Counter(int(n) for n in before_str.split())
             if stated_before != current_numbers: return False
@@ -298,12 +304,14 @@ def verify_stateful_cot(initial_numbers: List[int], target: int, cot_text: str) 
             current_numbers[res] += 1
             stated_after = Counter(int(n) for n in after_str.split())
             if stated_after != current_numbers: return False
-        
+            last_res = res
+            
         if len(current_numbers) != 1: return False
         final_result = next(iter(current_numbers))
         declared_answer = get_declared_answer(cot_text)
         return (declared_answer is not None and
-                final_result == declared_answer and final_result == target)
+                last_res is not None and
+                last_res == declared_answer == target)
     except Exception:
         return False
 inference_mode = getattr(torch, "inference_mode", torch.no_grad)
@@ -388,10 +396,10 @@ class Block(nn.Module):
         return x
 
 class DecoderOnly(nn.Module):
-    def __init__(self, vocab, d, h, n_layers, max_len, pad_id, use_grad_ckpt):
+    def __init__(self, vocab, d, h, n_layers, max_len, pad_id, use_gradient_checkpointing):
         super().__init__()
         self.pad_id = pad_id
-        self.use_gradient_checkpointing = use_grad_ckpt
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         self.tok = nn.Embedding(vocab, d, padding_idx=pad_id)
         self.pos = nn.Embedding(max_len, d)
         self.blocks = nn.ModuleList([Block(d, h, max_len) for _ in range(n_layers)])
@@ -449,7 +457,7 @@ def train_one_epoch(model, opt, loader, device, tok, scaler):
     model_to_call = model.module if isinstance(model, nn.DataParallel) else model
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type=='cuda'):
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(device.type=='cuda' and torch.cuda.is_bf16_supported())):
             hidden_states = model_to_call.forward_features(x)
             loss, correct, n_tokens = compute_masked_loss(
                 model_to_call.head, hidden_states, y, tok.sep_id, tok.pad_id, tok.eos_id
@@ -475,7 +483,7 @@ def validate(model, loader, device, tok):
     model_to_call = model.module if isinstance(model, nn.DataParallel) else model
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type=='cuda'):
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(device.type=='cuda' and torch.cuda.is_bf16_supported())):
             hidden_states = model_to_call.forward_features(x)
             loss, correct, n_tokens = compute_masked_loss(
                 model_to_call.head, hidden_states, y, tok.sep_id, tok.pad_id, tok.eos_id
@@ -501,7 +509,7 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
 
     for _ in range(min(max_out, model.max_len - len(prompt_ids))):
         if x.size(1) >= model.max_len: break
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(device.type=='cuda')):
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(device.type=='cuda' and torch.cuda.is_bf16_supported())):
             logits = model(x)[:, -1, :]
         nxt = logits.argmax(-1).item()
         if nxt in stop_ids: break
@@ -604,7 +612,7 @@ def main():
     model = DecoderOnly(
         tok.vocab_size, config['d_model'], config['n_heads'], 
         config['n_layers'], max_len, tok.pad_id, 
-        use_grad_ckpt=config['use_gradient_checkpointing']
+        use_gradient_checkpointing=config['use_gradient_checkpointing']
     ).to(device)
     
     n_gpus = torch.cuda.device_count()
@@ -692,7 +700,7 @@ def main():
         final_model = DecoderOnly(
             tok.vocab_size, config['d_model'], config['n_heads'], 
             config['n_layers'], max_len, tok.pad_id, 
-            use_grad_ckpt=False
+            use_gradient_checkpointing=False
         ).to(device)
         final_model.load_state_dict(checkpoint['state'])
         
