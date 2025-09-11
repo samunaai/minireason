@@ -213,7 +213,7 @@ def generate_countdown_data(config, n_workers=None):
     
     print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers ({len(tasks)} tasks)...")
     ins, outs, total_attempts, total_rej_s, total_rej_p, steps_all = [], [], 0, 0, 0, []
-    with Pool(processes=n_workers, initializer=lambda: torch.set_num_threads(1)) as pool:
+    with Pool(processes=n_workers, initializer=torch.set_num_threads, initargs=(1,)) as pool:
         pbar = tqdm(
             pool.imap_unordered(_gen_chunk, tasks, chunksize=2),
             total=len(tasks),
@@ -306,8 +306,6 @@ def verify_stateful_cot(initial_numbers: List[int], target: int, cot_text: str) 
             if stated_after != current_numbers: return False
             last_res = res
             
-        if len(current_numbers) != 1: return False
-        final_result = next(iter(current_numbers))
         declared_answer = get_declared_answer(cot_text)
         return (declared_answer is not None and
                 last_res is not None and
