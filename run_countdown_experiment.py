@@ -44,7 +44,7 @@ HPARAMS = {
     "seed": 42,
 }
 
-# ... (Logger, CountdownSolver, data generation functions remain the same) ...
+# All helper classes and functions 
 class Logger:
     """A simple utility to tee stdout to a log file."""
     def __init__(self, filename="outputs.log"):
@@ -388,10 +388,10 @@ class Block(nn.Module):
         return x
 
 class DecoderOnly(nn.Module):
-    def __init__(self, vocab, d, h, n_layers, max_len, pad_id, use_gradient_checkpointing):
+    def __init__(self, vocab, d, h, n_layers, max_len, pad_id, use_grad_ckpt):
         super().__init__()
         self.pad_id = pad_id
-        self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.use_gradient_checkpointing = use_grad_ckpt
         self.tok = nn.Embedding(vocab, d, padding_idx=pad_id)
         self.pos = nn.Embedding(max_len, d)
         self.blocks = nn.ModuleList([Block(d, h, max_len) for _ in range(n_layers)])
@@ -411,10 +411,10 @@ class DecoderOnly(nn.Module):
         
         for blk in self.blocks:
             if self.use_gradient_checkpointing and self.training:
-                # Wrap the block call in a lambda to handle non-tensor args robustly
+                mask_device = key_padding_mask.to(h.device, non_blocking=True)
                 h = checkpoint.checkpoint(
                     lambda h_block, mask: blk(h_block, mask),
-                    h, key_padding_mask, use_reentrant=False
+                    h, mask_device, use_reentrant=False
                 )
             else:
                 h = blk(h, key_padding_mask)
@@ -436,7 +436,6 @@ def compute_masked_loss(model_head, hidden_states, targets, sep_id, pad_id, eos_
     selected_t = t_for_pred[mask]
     total_supervised = selected_t.size(0)
     if total_supervised == 0:
-        # Return a graph-connected zero scalar loss if no supervised tokens
         return hidden_states.sum() * 0.0, 0, 0
     logits = model_head(selected_h)
     loss = F.cross_entropy(logits, selected_t)
@@ -481,7 +480,7 @@ def validate(model, loader, device, tok):
             loss, correct, n_tokens = compute_masked_loss(
                 model_to_call.head, hidden_states, y, tok.sep_id, tok.pad_id, tok.eos_id
             )
-        if n_tokens > 0:
+        if n_tokens > 0: 
             total_loss += loss.item() * n_tokens
             total_correct += correct
             total_tokens += n_tokens
@@ -489,7 +488,7 @@ def validate(model, loader, device, tok):
     avg_loss = total_loss / max(1, total_tokens)
     return acc, avg_loss
 
-# ... (sample_one and compute_lengths remain the same) ...
+
 @inference_mode()
 def sample_one(model, tokenizer, prompt_ids, max_out, device):
     model.eval()
@@ -503,7 +502,6 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
     for _ in range(min(max_out, model.max_len - len(prompt_ids))):
         if x.size(1) >= model.max_len: break
         with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=(device.type=='cuda')):
-            # The original `forward` method is still used here for simple inference
             logits = model(x)[:, -1, :]
         nxt = logits.argmax(-1).item()
         if nxt in stop_ids: break
@@ -528,6 +526,7 @@ def compute_lengths(num_sources:int)->tuple[int,int,int]:
     post_sep = 28 * (num_sources - 1) + 12
     total = pre_sep + post_sep
     return pre_sep, post_sep, total
+
 # =========================
 # Main execution block
 # =========================
@@ -542,7 +541,6 @@ def main():
     mi, mo, ml = compute_lengths(config['num_sources'])
     config['max_input_len'], config['max_output_len'], max_len = mi, mo, ml
 
-    # ... (Data loading/generation logic remains the same) ...
     t0 = time.time()
     ins, outs = [], []
     if config['use_cached_data']:
@@ -551,7 +549,7 @@ def main():
             print(f"\n{'='*60}\n  FOUND CACHE: Loading dataset from '{cache_filename}'\n  ({config['num_samples']:,} samples, {config['num_sources']} sources)\n{'='*60}\n")
             data = torch.load(cache_filename); ins, outs = data['ins'], data['outs']
             try:
-                max_seen = max(int(t) for s in (ins+outs) for t in re.findall(r"\d+", s) if t.isdigit())
+                max_seen = max((int(t) for s in (ins+outs) for t in re.findall(r"\d+", s) if t.isdigit()), default=0)
                 if max_seen > config['max_num_vocab']:
                     raise RuntimeError(f"Cache numbers (up to {max_seen}) exceed current vocab limit ({config['max_num_vocab']})")
             except (ValueError, RuntimeError) as e:
@@ -604,9 +602,9 @@ def main():
     val_loader = DataLoader(va, shuffle=False, **loader_args)
 
     model = DecoderOnly(
-        tok.vocab_size, config['d_model'], config['n_heads'],
-        config['n_layers'], max_len, tok.pad_id,
-        use_gradient_checkpointing=config['use_gradient_checkpointing']
+        tok.vocab_size, config['d_model'], config['n_heads'], 
+        config['n_layers'], max_len, tok.pad_id, 
+        use_grad_ckpt=config['use_gradient_checkpointing']
     ).to(device)
     
     n_gpus = torch.cuda.device_count()
@@ -615,7 +613,6 @@ def main():
         try: model = torch.compile(model); print("Model compiled successfully (PyTorch 2.0+).")
         except Exception: print("Could not compile model (PyTorch < 2.0 or other issue).")
 
-    # ... (Optimizer setup remains the same) ...
     decay_params, no_decay_params, seen = [], [], set()
     for name, p in model.named_parameters():
         pid = id(p)
@@ -628,16 +625,35 @@ def main():
     opt = torch.optim.AdamW(optim_groups, lr=config['lr'])
     scaler = torch.cuda.amp.GradScaler(enabled=False)
 
+    width = 62
+    print(f"\n{'='*width}\n{'Run Configuration':^{width}}\n{'='*width}")
+    print(f"{'--- System & Hardware ---':^{width}}")
+    print(f"{'PyTorch Version:':<28} {torch.__version__}")
+    print(f"{'Available GPUs:':<28} {n_gpus}")
+    print(f"\n{'--- Data & Vocab ---':^{width}}")
+    print(f"{'Dataset Size:':<28} {config['num_samples']:,} samples")
+    print(f"{'Problem Type:':<28} {config['num_sources']}-number Countdown")
+    print(f"{'Vocabulary Size:':<28} {config['vocab_size']} tokens")
+    print(f"\n{'--- Model Architecture ---':^{width}}")
+    print(f"{'d_model / n_heads / n_layers:':<28} {config['d_model']} / {config['n_heads']} / {config['n_layers']}")
+    print(f"{'Total Parameters:':<28} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} ")
+    print(f"{'Max Sequence Length:':<28} {max_len} (prompt={mi}, solution={mo})")
+    print(f"\n{'--- Training Hyperparameters ---':^{width}}")
+    print(f"{'Epochs (Max):':<28} {config['epochs']}")
+    print(f"{'Early Stopping Patience:':<28} {config['patience']}")
+    print(f"{'Batch Size:':<28} {config['batch_size']}")
+    print(f"{'Learning Rate:':<28} {config['lr']}")
+    print(f"{'Weight Decay:':<28} {config['weight_decay']}")
+    print(f"{'Gradient Checkpointing:':<28} {'Enabled' if config['use_gradient_checkpointing'] else 'Disabled'}")
+    print(f"{'Random Seed:':<28} {config['seed']}")
+    print(f"{'='*width}\n")
 
-    print(f"\n{'='*50}\n{'Run Configuration':^50}\n{'='*50}")
-    print(f"{'PyTorch Version:':<25} {torch.__version__}\n{'Using GPUs:':<25} {n_gpus}\n{'-'*50}")
-    print(f"{'Dataset Size:':<25} {config['num_samples']:,} samples\n{'Problem Type:':<25} {config['num_sources']}-number Countdown\n{'Vocabulary Size:':<25} {config['vocab_size']} tokens\n{'-'*50}")
-    print(f"{'Model d_model/n_heads/n_layers:':<25} {config['d_model']}/{config['n_heads']}/{config['n_layers']}\n{'Model Parameters:':<25} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} total\n{'Max Sequence Length:':<25} {max_len} (pre={mi}, post={mo})\n{'-'*50}")
-    print(f"{'Epochs:':<25} {config['epochs']} (patience={config['patience']})\n{'Global Batch Size:':<25} {config['batch_size']}\n{'Learning Rate:':<25} {config['lr']}")
-    print(f"{'Gradient Checkpointing:':<25} {'Enabled' if config['use_gradient_checkpointing'] else 'Disabled'}\n{'='*50}\n")
-    
-    sdp_context = (torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
-                   if torch.cuda.is_available() else contextlib.nullcontext())
+    if torch.cuda.is_available() and hasattr(torch.backends.cuda, "sdp_kernel"):
+        sdp_context = torch.backends.cuda.sdp_kernel(
+            enable_flash=True, enable_mem_efficient=True, enable_math=False
+        )
+    else:
+        sdp_context = contextlib.nullcontext()
     
     with sdp_context:
         print("Training with SDP backend enabled..." if torch.cuda.is_available() else "Training...")
@@ -661,7 +677,8 @@ def main():
             if va_loss < best_val_loss:
                 best_val_loss = va_loss; patience_counter = 0
                 model_to_save = model.module if isinstance(model, nn.DataParallel) else model
-                state_to_save = model_to_save._orig_mod.state_dict() if hasattr(model_to_save, '_orig_mod') else model_to_save.state_dict()
+                base_model = getattr(model_to_save, "_orig_mod", model_to_save)
+                state_to_save = base_model.state_dict()
                 torch.save({ "state": copy.deepcopy(state_to_save), "config": config }, "best_model.pt")
                 print(f"  -> New best val loss: {best_val_loss:.4f}. Checkpoint saved.")
             else:
@@ -673,14 +690,15 @@ def main():
         print("\nLoading best model for final evaluation...")
         checkpoint = torch.load("best_model.pt", map_location=device)
         final_model = DecoderOnly(
-            tok.vocab_size, config['d_model'], config['n_heads'],
-            config['n_layers'], max_len, tok.pad_id,
-            use_gradient_checkpointing=False
+            tok.vocab_size, config['d_model'], config['n_heads'], 
+            config['n_layers'], max_len, tok.pad_id, 
+            use_grad_ckpt=False
         ).to(device)
         final_model.load_state_dict(checkpoint['state'])
+        
         if torch.cuda.device_count() > 1:
             final_model = nn.DataParallel(final_model)
-        
+
         metrics = evaluate_program_metrics(final_model, tok, val_loader, device, config['max_output_len'], max_batches=16)
         print(f"\n--- Final Evaluation Metrics ---\n"
               f"  Program Exact Match:  {metrics['program_exact_match']*100:.2f}%\n"
