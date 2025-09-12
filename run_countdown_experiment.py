@@ -2,7 +2,7 @@
 ```python
 # run_countdown_experiment.py
 import math, random, itertools, time, sys, bisect, re, copy, os, contextlib
-from collections import defaultdict, deque, Counter
+from collections import defaultdict, Counter
 from typing import Dict, List, Optional
 from multiprocessing import Pool, cpu_count
 
@@ -590,7 +590,9 @@ def main():
         loader_args = {'batch_size': config['batch_size'], 'num_workers': min(2, cpu_count()), 'pin_memory': device.type=='cuda'}
         
         train_sampler = DistributedSampler(tr, num_replicas=world_size, rank=global_rank, shuffle=True, drop_last=True) if is_ddp else None
-        train_loader = DataLoader(tr, sampler=train_sampler, shuffle=(train_sampler is None), drop_last=True, **loader_args)
+        train_loader = DataLoader(tr, sampler=train_sampler, shuffle=(train_sampler is None),
+                                  drop_last=True, persistent_workers=True if loader_args["num_workers"] > 0 else False,
+                                  **loader_args)
         
         if global_rank == 0:
             val_loader_eval = DataLoader(va, batch_size=config['batch_size'], shuffle=False, **loader_args)
@@ -602,8 +604,9 @@ def main():
         ).to(device)
         
         if is_ddp:
-            model = nn.parallel.DistributedDataParallel(model, device_ids=[torch.cuda.current_device()])
-        elif os.environ.get("ALLOW_COMPILE", "0") == "1":
+            model = nn.parallel.DistributedDataParallel(
+                model, device_ids=[torch.cuda.current_device()], gradient_as_bucket_view=True
+            )        elif os.environ.get("ALLOW_COMPILE", "0") == "1":
             try: model = torch.compile(model); print("Model compiled successfully.")
             except Exception: print("Could not compile model.")
 
