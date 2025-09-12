@@ -1,9 +1,7 @@
-
-```python
 # run_countdown_experiment.py
-import math, random, itertools, time, sys, bisect, re, copy, os, contextlib
+import sys, random, itertools, bisect, re, os
 from collections import defaultdict, Counter
-from typing import Dict, List, Optional
+from typing import List, Optional
 from multiprocessing import Pool, cpu_count
 
 # FIX: Set thread env vars *before* importing torch for maximum reliability.
@@ -589,7 +587,7 @@ def main():
         device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
         loader_args = {'batch_size': config['batch_size'], 'num_workers': min(2, cpu_count()), 'pin_memory': device.type=='cuda'}
         
-        train_sampler = DistributedSampler(tr, num_replicas=world_size, rank=global_rank, shuffle=True, drop_last=True) if is_ddp else None
+        train_sampler = DistributedSampler(tr, num_replicas=world_size, rank=global_rank, shuffle=True) if is_ddp else None
         train_loader = DataLoader(tr, sampler=train_sampler, shuffle=(train_sampler is None),
                                   drop_last=True, persistent_workers=True if loader_args["num_workers"] > 0 else False,
                                   **loader_args)
@@ -606,9 +604,12 @@ def main():
         if is_ddp:
             model = nn.parallel.DistributedDataParallel(
                 model, device_ids=[torch.cuda.current_device()], gradient_as_bucket_view=True
-            )        elif os.environ.get("ALLOW_COMPILE", "0") == "1":
-            try: model = torch.compile(model); print("Model compiled successfully.")
-            except Exception: print("Could not compile model.")
+            )
+        elif os.environ.get("ALLOW_COMPILE", "0") == "1":
+            try:
+                model = torch.compile(model); print("Model compiled successfully.")
+            except Exception:
+                print("Could not compile model.")
 
         decay_params, no_decay_params, seen = [], [], set()
         for name, p in model.named_parameters():
