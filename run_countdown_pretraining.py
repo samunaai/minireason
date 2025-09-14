@@ -47,10 +47,10 @@ import matplotlib.pyplot as plt
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(False)  # prefer Flash/MemEfficient
-
+    # Guard SDP toggles for older PyTorch versions
+    for fn in ("enable_flash_sdp", "enable_mem_efficient_sdp", "enable_math_sdp"):
+        if hasattr(torch.backends.cuda, fn):
+            getattr(torch.backends.cuda, fn)(fn != "enable_math_sdp")  # prefer Flash/MemEfficient
 # =========================
 # CONFIGURATION & HYPERPARAMETERS
 # =========================
@@ -71,9 +71,10 @@ HPARAMS = {
     "lr": 3e-4,
     "weight_decay": 0.01,
     "train_split_ratio": 0.9,
-    "lambda_honesty": 0.5,        # Weight for the honesty loss component
-    "lambda_summary": 0.25,       # Weight for EXPR summary (expression) CE
-    "lambda_transition": 0.25,    # Weight for final post-state consistency
+    # Loss weights
+    "lambda_transition_ce": 0.25, # CE only on the final post-state bracket span
+    "lambda_final_expr": 0.25,    # CE on tokens after EXPR
+    "lambda_last_equation": 0.5,  # last equation loss (a op b = c)
     "use_gradient_checkpointing": False,
     "seed": 42,
     # --- Stochastic decision, deterministic execution (inference) ---
@@ -433,8 +434,6 @@ class DecoderOnly(nn.Module):
         self.ln_f = nn.LayerNorm(d)
         self.head = nn.Linear(d, vocab, bias=False)
         self.head.weight = self.tok.weight
-        self.valid_head = nn.Linear(d, 1) # Honesty head for arithmetic validation
-        self.trans_head = nn.Linear(d, 1) # Final transition consistency
         self.max_len = max_len
         self.register_buffer("pos_idx", torch.arange(max_len))
 
@@ -456,7 +455,32 @@ class DecoderOnly(nn.Module):
     def forward(self, x):
         h = self.forward_features(x)
         return self.head(h)
- 
+
+def _last_step_spans(token_ids: torch.Tensor, tok) -> Optional[Tuple[int, int, int]]:
+    """
+    Return (eq_idx, post_state_l, post_state_r_exclusive) for the *last* step before EXPR (or EOS).
+    We look for "... a op b = c -> [ after ]" and return indices in token space.
+    """
+    ids = token_ids.tolist()
+    try:
+        end = ids.index(tok.tok2id['EXPR'])
+    except ValueError:
+        end = len(ids)
+    eq_id, arr_id, lbr, rbr = tok.tok2id['='], tok.tok2id['->'], tok.tok2id['['], tok.tok2id[']']
+    # last '=' before end
+    eq_positions = [i for i, t in enumerate(ids[:end]) if t == eq_id]
+    if not eq_positions:
+        return None
+    eq_idx = eq_positions[-1]
+    # find the "-> [ ... ]" that follows this '='
+    try:
+        arrow2 = ids.index(arr_id, eq_idx + 1)
+        l = ids.index(lbr, arrow2 + 1)
+        r = ids.index(rbr, l + 1) + 1  # exclusive
+    except ValueError:
+        return None
+    return eq_idx, l, r
+
 def _all_eq_positions(ids, tok: Tokenizer, end_limit: Optional[int] = None):
     """Indices of every '=' token before EXPR (or up to end_limit)."""
     eq_id = tok.tok2id['=']
@@ -482,7 +506,7 @@ def _all_equations_ok(text: str) -> List[float]:
     return outs
 
 
-def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
+def compute_masked_loss(model, hidden_states, targets, tok):
     h_for_pred = hidden_states[:, :-1, :].contiguous()
     t_for_pred = targets[:, 1:].contiguous()
     B, Tm1, D = h_for_pred.shape
@@ -491,57 +515,52 @@ def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
     with torch.no_grad():
         sep_pos = (targets == tok.sep_id).int().argmax(dim=1)
         eos_pos = (targets == tok.eos_id).int().argmax(dim=1)
-        # Supervise solution + expression tokens: (SEP, EOS)
-        ce_mask = (idx + 1 > sep_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
-                  & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
-        drop_mask = torch.zeros_like(ce_mask)
+        # Base CE mask on (SEP, EOS)
+        base_ce_mask = (idx + 1 > sep_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
+                       & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
+
+        # Build a mask for the final post-state bracket span ONLY (last transition)
+        last_transition_mask = torch.zeros_like(base_ce_mask)
         for b in range(B):
             spans = _last_step_spans(targets[b], tok)
-            if spans is None: continue
+            if spans is None:
+                continue
             _, post_l, post_r = spans
-            l = max(0, post_l - 1)
+            l = max(0, post_l - 1)  # predict '[' at t = (l - 1)
             r = post_r
-            # include the delimiter ';' if it’s right after the closing bracket
+            # include the following ';' if present
             semi = tok.tok2id[';']
             if r < targets.size(1) and targets[b, r].item() == semi:
                 r += 1
-            drop_mask[b, l:r] = True
-        ce_mask &= ~drop_mask
+            # supervise t indices that predict tokens in [post_l, r_exclusive)
+            # i.e., t ∈ [l, r-1)
+            if r - 1 > l:
+                last_transition_mask[b, l:r-1] = True
+
+        # Base CE excludes the last transition span to avoid double counting
+        ce_mask = base_ce_mask & (~last_transition_mask)
 
     selected_h = h_for_pred[ce_mask]; selected_t = t_for_pred[ce_mask]
     # debug: supervised token count
     # logging.debug(f"supervised_tokens={int(ce_mask.sum().item())}")
     if selected_t.numel() == 0:
-        ce_loss, ce_correct, ce_tokens = hidden_states.sum() * 0.0, 0, 0
+        base_cross_entropy, ce_correct, ce_tokens = hidden_states.sum() * 0.0, 0, 0
     else:
         logits = model.head(selected_h)
-        ce_loss = F.cross_entropy(logits, selected_t)
+        base_cross_entropy = F.cross_entropy(logits, selected_t)
         ce_correct = (logits.argmax(-1) == selected_t).sum().item()
         ce_tokens = selected_t.numel()
 
 
-    # === Arithmetic validity at ALL equations (reuse valid_head) ===
-    val_logits, val_targets = [], []
-    for b in range(B):
-        ids_b = targets[b].tolist()
-        eq_pos = _all_eq_positions(ids_b, tok)
-        if not eq_pos:
-            continue
-        labels = _all_equations_ok(tok.decode(ids_b))
-        m = min(len(eq_pos), len(labels))
-        for j in range(m):
-            t_eq = eq_pos[j] - 1  # read just before '='
-            if 0 <= t_eq < Tm1:
-                val_logits.append(hidden_states[b, t_eq, :])
-                val_targets.append(labels[j])
-    if val_logits:
-        val_logits  = torch.stack(val_logits, dim=0)
-        val_targets = torch.tensor(val_targets, device=targets.device, dtype=torch.float32)
-        h_loss = F.binary_cross_entropy_with_logits(model.valid_head(val_logits).squeeze(-1), val_targets)
+    # === Last-transition loss (CE on final [ ... ] bracket span) ===
+    post_h = h_for_pred[last_transition_mask]
+    post_t = t_for_pred[last_transition_mask]
+    if post_t.numel() == 0:
+        last_transition_loss = hidden_states.sum() * 0.0
     else:
-        h_loss = hidden_states.sum() * 0.0
+        last_transition_loss = F.cross_entropy(model.head(post_h), post_t)
 
-    # ===== EXPR summary loss (only tokens after EXPR until EOS) =====
+    # ===== Final-expression loss (only tokens after EXPR until EOS) =====
     with torch.no_grad():
         Tm1 = t_for_pred.size(1)
         idx = torch.arange(Tm1, device=targets.device).unsqueeze(0)
@@ -554,79 +573,81 @@ def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
     sum_h = h_for_pred[expr_mask]
     sum_t = t_for_pred[expr_mask]
     if sum_t.numel() == 0:
-        summary_loss = hidden_states.sum() * 0.0
+        final_expression_loss = hidden_states.sum() * 0.0
     else:
-        summary_loss = F.cross_entropy(model.head(sum_h), sum_t)
+        final_expression_loss = F.cross_entropy(model.head(sum_h), sum_t)
 
-    # === Final post-state transition consistency (prevent copying TGT) ===
-    # Label 1 iff the last post-state equals multiset(before) - {a,b} + {c} and math is valid.
-    # Feature location: token just BEFORE the final '[' following the last '='.
-    trans_logits, trans_targets = [], []
-    for b in range(B):
-        ids_b = targets[b].tolist()
-        spans = _last_step_spans(targets[b], tok)
-        if spans is None:
-            continue
-        _, post_l, _ = spans
-        anchor = post_l - 1
-        if not (0 <= anchor < Tm1):
-            continue
-        # parse last step from text for the label
-        s_prog = tok.decode(ids_b).split("EXPR", 1)[0]
-        steps = re.findall(
-            r"\[\s*([^\]]*?)\s*\]\s*->\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*(\d+)\s*->\s*\[\s*([^\]]*?)\s*\]",
-            s_prog
-        )
-        if not steps:
-            continue
-        before_str, a_s, op, b_s, c_s, after_str = steps[-1]
-        a, b2, c = int(a_s), int(b_s), int(c_s)
-        before = Counter(int(z) for z in re.split(r"[,\s]+", before_str.strip()) if z)
-        after  = Counter(int(z) for z in re.split(r"[,\s]+", after_str.strip()) if z)
-        ok_math = (
-            (op == '+' and a + b2 == c) or
-            (op == '-' and a > b2 and a - b2 == c) or
-            (op == '*' and a > 1 and b2 > 1 and a * b2 == c) or
-            (op == '/' and b2 >= 1 and a % b2 == 0 and a // b2 == c)
-        )
-        ok_trans = False
-        if ok_math:
-            cur = before.copy()
-            if cur.get(a, 0) and cur.get(b2, 0) - (a == b2) >= 0:
-                cur[a] -= 1
-                if cur[a] == 0: cur.pop(a, None)
-                cur[b2] -= 1
-                if cur[b2] == 0: cur.pop(b2, None)
-                cur[c] += 1
-                ok_trans = (cur == after)
-        trans_logits.append(hidden_states[b, anchor, :])
-        trans_targets.append(1.0 if (ok_math and ok_trans) else 0.0)
-    if trans_logits:
-        trans_logits  = torch.stack(trans_logits, dim=0)
-        trans_targets = torch.tensor(trans_targets, device=targets.device, dtype=torch.float32)
-        trans_loss = F.binary_cross_entropy_with_logits(model.trans_head(trans_logits).squeeze(-1), trans_targets)
+    # === Last-equation loss: compare model's digit logits to value(a op b) (only last equation) ===
+    with torch.no_grad():
+        digit_ids = [tok.tok2id[str(d)] for d in range(10)]
+        eq_meta = []  # (b, pos_list, truth_value_float)
+        for b in range(B):
+            ids_b = targets[b].tolist()
+            try:
+                end_limit = ids_b.index(tok.tok2id['EXPR'])
+            except ValueError:
+                end_limit = len(ids_b)
+            # find last '=' before EXPR
+            eq_positions = [i for i, t in enumerate(ids_b[:end_limit]) if t == tok.tok2id['=']]
+            if not eq_positions:
+                continue
+            eq = eq_positions[-1]
+            # parse a,op,b,c from text for truth value
+            text_b = tok.decode([t for t in ids_b[:end_limit] if t not in (tok.pad_id, tok.eos_id)])
+            m_all = list(re.finditer(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*([0-9]+)", text_b))
+            if not m_all:
+                continue
+            a_v = int(m_all[-1].group(1)); op = m_all[-1].group(2); b_v = int(m_all[-1].group(3))
+            if   op == '+': truth_val = a_v + b_v
+            elif op == '-': truth_val = a_v - b_v
+            elif op == '*': truth_val = a_v * b_v
+            elif op == '/': truth_val = a_v // b_v if b_v != 0 else 0
+            else:           truth_val = 0
+            # collect t indices that predict the result digits right after '='
+            j = eq + 1
+            pos_list = []
+            while j < len(ids_b) and ids_b[j] in digit_ids:
+                if 0 <= (j - 1) < Tm1:
+                    pos_list.append(j - 1)
+                j += 1
+            if pos_list:
+                eq_meta.append((b, pos_list, float(truth_val)))
+    if eq_meta:
+        all_logits = model.head(h_for_pred)  # (B, Tm1, V)
+        losses = []
+        for b_idx, pos_list, truth_val in eq_meta:
+            logits_digits = all_logits[b_idx, pos_list][:, digit_ids]  # (L,10)
+            probs = torch.softmax(logits_digits, dim=-1)
+            digits = torch.arange(10, device=targets.device, dtype=probs.dtype)
+            exp_digits = (probs * digits).sum(dim=-1)  # (L,)
+            Ld = len(pos_list)
+            # stable, device-friendly powers of 10
+            exps = torch.arange(Ld - 1, -1, -1, device=targets.device, dtype=probs.dtype)
+            weights = torch.pow(torch.tensor(10.0, device=targets.device, dtype=probs.dtype), exps)
+            exp_num = (exp_digits * weights).sum()
+            losses.append(torch.abs(exp_num - torch.tensor(truth_val, device=targets.device, dtype=probs.dtype)))
+        last_equation_loss = torch.stack(losses).mean()
     else:
-        trans_loss = hidden_states.sum() * 0.0
-
+        last_equation_loss = hidden_states.sum() * 0.0
     total_loss = (
-        ce_loss
-        + lambda_honesty * h_loss
-        + HPARAMS.get("lambda_summary", 0.0) * summary_loss
-        + HPARAMS.get("lambda_transition", 0.0) * trans_loss
+        base_cross_entropy
+        + HPARAMS.get("lambda_transition_ce", 0.0) * last_transition_loss
+        + HPARAMS.get("lambda_final_expr", 0.0) * final_expression_loss
+        + HPARAMS.get("lambda_last_equation", 0.0) * last_equation_loss
     )
     return total_loss, ce_correct, ce_tokens
+
 
 def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None, amp_dtype=torch.float32, use_amp=False):
     model.train(is_train)
     batch_losses, total_correct, total_tokens = [], 0, 0
     model_to_call = model.module if hasattr(model, "module") else model
-    lambda_honesty = HPARAMS['lambda_honesty']
 
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
         with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp), torch.set_grad_enabled(is_train):
             hidden_states = model_to_call.forward_features(x)
-            loss, correct, n_tokens = compute_masked_loss(model_to_call, hidden_states, y, tok, lambda_honesty)
+            loss, correct, n_tokens = compute_masked_loss(model_to_call, hidden_states, y, tok)
         if n_tokens > 0 or is_train:
             if is_train:
                 opt.zero_grad(set_to_none=True)
@@ -818,7 +839,7 @@ def main():
             width=62; mi_print = max(mi - 1, 0)
             log_msg = f"""
 {'='*width}
-{'Run Configuration (RL Pre-training)':^{width}}
+{'Run Configuration (Countdown Pretraining)':^{width}}
 {'='*width}
 {f'PyTorch Version:':<32} {torch.__version__}
 {f'DDP Enabled:':<32} {'Yes' if is_ddp else 'No'}
@@ -828,7 +849,9 @@ def main():
 {f'Total Parameters:':<32} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} 
 {f'Max Sequence Length:':<32} {ml} (prompt={mi_print}, solution={mo})
 {f'Batch Size / LR:':<32} {config['batch_size']} / {config['lr']}
-{f'Honesty Loss Lambda:':<32} {config['lambda_honesty']}
+{f'λ last_transition:':<32} {config.get('lambda_transition_ce', 0.0)}
+{f'λ final_expression:':<32} {config.get('lambda_final_expr', 0.0)}
+{f'λ last_equation:':<32} {config.get('lambda_last_equation', 0.0)}
 {'='*width}"""
             logging.info(log_msg)
 
