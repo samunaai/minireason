@@ -624,7 +624,10 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
         if x.size(1) >= base_model.max_len: break
         with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp):
             logits = base_model(x)[:, -1, :].squeeze(0).float()
-        
+
+        logits[tokenizer.pad_id] = float("-inf")
+        logits[tokenizer.sep_id] = float("-inf")
+
         # After EXPR, allow only digits, ops, parens (and EOS)
         if in_expr:
             keep = [tokenizer.tok2id[str(d)] for d in range(10)] + \
@@ -632,7 +635,9 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
             mask = torch.full_like(logits, float("-inf"))
             mask[keep] = 0.0
             logits = logits + mask
-            
+            # Ensure PAD is still banned inside EXPR mask
+            logits[tokenizer.pad_id] = float("-inf")
+        
         if steps_done < stochastic_steps and (awaiting_first_digit or operator_sample_pending):
             nxt = _multinomial_from_logits(logits)
         else:
