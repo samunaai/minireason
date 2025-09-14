@@ -1,7 +1,7 @@
 # run_countdown_experiment.py
-import sys, random, itertools, bisect, re, os
-from collections import defaultdict, Counter
-from typing import List, Optional
+import math, random, itertools, time, sys, bisect, re, copy, os, contextlib, inspect
+from collections import defaultdict, deque, Counter
+from typing import Dict, List, Optional
 from multiprocessing import Pool, cpu_count
 
 # FIX: Set thread env vars *before* importing torch for maximum reliability.
@@ -29,7 +29,6 @@ import matplotlib.pyplot as plt
 HPARAMS = {
     "num_sources": 6,
     "num_samples": 100000,
-    "max_num_vocab": 999,
     "use_cached_data": True,
     "small_deck": [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10],
     "large_deck": [25, 50, 75, 100],
@@ -45,6 +44,7 @@ HPARAMS = {
     "use_gradient_checkpointing": False,
     "seed": 42,
 }
+SAFE_MAX_LEN = int(os.environ.get("MAX_SEQ_LEN", "2048"))
 
 # =========================
 # Logging Utility
@@ -128,7 +128,7 @@ class CountdownSolver:
                 else:
                     self._dfs(tuple(rest), target, new_steps, memo, max_depth)
 
-def steps_to_program(initial_numbers: List[int], solution_steps: List, max_num: int) -> Optional[str]:
+def steps_to_program(initial_numbers: List[int], solution_steps: List) -> Optional[str]:
     if solution_steps is None: return None
     if not solution_steps:
         return "ANSWER"
@@ -137,8 +137,6 @@ def steps_to_program(initial_numbers: List[int], solution_steps: List, max_num: 
     current_numbers = Counter(initial_numbers)
     
     for n1, op, n2, res in solution_steps:
-        if res > max_num: return None
-        
         before_state_str = ' '.join(str(x) for x in sorted(current_numbers.elements()))
         out.append(f"[ {before_state_str} ] ->")
         out.append(f"{n1} {op} {n2} = {res} ->")
@@ -159,11 +157,11 @@ def steps_to_program(initial_numbers: List[int], solution_steps: List, max_num: 
     return program_str
 
 def _gen_chunk(args):
-    chunk_samples, num_sources, seed, max_num_for_vocab, small_deck, large_deck, target_range = args
+    chunk_samples, num_sources, seed, small_deck, large_deck, target_range = args
     random.seed(seed)
     solver = CountdownSolver()
     inputs, outputs = [], []
-    attempts = rejects_solver = rejects_program = 0
+    attempts = rejects_solver = 0
     max_attempts = max(8000, 800 * chunk_samples)
 
     while len(inputs) < chunk_samples and attempts < max_attempts:
@@ -187,18 +185,18 @@ def _gen_chunk(args):
         steps = solver.solve(source_numbers, target, max_depth=num_sources - 1)
         if steps is None: rejects_solver += 1; continue
         
-        program = steps_to_program(source_numbers, steps, max_num=max_num_for_vocab)
-        if program is None: rejects_program += 1; continue
+        program = steps_to_program(source_numbers, steps)
+        if program is None: continue
 
         in_list = ' '.join(map(str, source_numbers))
         inputs.append(f"IN: [ {in_list} ] TGT: {target}")
         outputs.append(program)
 
-    return inputs, outputs, attempts, rejects_solver, rejects_program
+    return inputs, outputs, attempts, rejects_solver
 
 def generate_countdown_data(config, n_workers=None):
     num_samples, num_sources = config['num_samples'], config['num_sources']
-    seed, max_num_for_vocab = config['seed'], config['max_num_vocab']
+    seed = config['seed']
     small_deck, large_deck = config['small_deck'], config['large_deck']
     target_range = config['target_range']
     
@@ -209,19 +207,19 @@ def generate_countdown_data(config, n_workers=None):
     per_task = max(1, num_samples // target_tasks)
     extras = num_samples % target_tasks
     tasks = [(per_task + (1 if i < extras else 0), num_sources, seed + 1000 * i, 
-              max_num_for_vocab, small_deck, large_deck, target_range) 
+              small_deck, large_deck, target_range) 
               for i in range(target_tasks)]
     
     print(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers ({len(tasks)} tasks)...")
-    ins, outs, total_attempts, total_rej_s, total_rej_p = [], [], 0, 0, 0
+    ins, outs, total_attempts, total_rej_s = [], [], 0, 0
     with Pool(processes=n_workers, initializer=torch.set_num_threads, initargs=(1,)) as pool:
         pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks, chunksize=2), total=len(tasks), desc="Generating Sample Batches")
-        for ins_chunk, outs_chunk, a, rs, rp in pbar:
-            ins += ins_chunk; outs += outs_chunk; total_attempts += a; total_rej_s += rs; total_rej_p += rp
+        for ins_chunk, outs_chunk, a, rs in pbar:
+            ins += ins_chunk; outs += outs_chunk; total_attempts += a; total_rej_s += rs
     
     acc_rate = 100.0 * len(ins) / max(1, total_attempts)
     print(f"Generated {len(ins):,} samples from {total_attempts:,} total attempts ({acc_rate:.1f}% acceptance).")
-    print(f"  Total Rejects: solver={total_rej_s:,}, program(filter)={total_rej_p:,}.")
+    print(f"  Total Rejects (solver): {total_rej_s:,}.")
     if len(ins) < num_samples: print(f"Warning: Underfilled. Generated {len(ins):,}/{num_samples:,} samples.")
     return ins[:num_samples], outs[:num_samples]
 
@@ -229,15 +227,15 @@ def generate_countdown_data(config, n_workers=None):
 # Tokenizer & Parsing
 # =========================
 class Tokenizer:
-    def __init__(self, max_num=999):
+    def __init__(self):
         self.special = ['PAD', 'EOS', 'SEP', 'IN:', 'TGT:', '[', ']', '=', ';', '->', '+', '-', '*', '/']
         self.cmds = ['ANSWER']
-        self.nums = [str(n) for n in range(max_num + 1)]
-        vocab = self.special + self.cmds + self.nums
+        self.digits = [str(d) for d in range(10)]
+        vocab = self.special + self.cmds + self.digits
         self.tok2id = {t: i for i, t in enumerate(vocab)}
         self.id2tok = {i: t for i, t in enumerate(vocab)}
         self._pad=self.tok2id['PAD']; self._eos=self.tok2id['EOS']; self._sep=self.tok2id['SEP']
-        self._tok_re = re.compile(r'(->)|(\[|\]|=|;|\+|\-|\*|/)')
+        self._tok_re = re.compile(r'(->|\[|\]|=|;|\+|\-|\*|/)')
 
     @property
     def pad_id(self): return self._pad
@@ -249,16 +247,39 @@ class Tokenizer:
     def vocab_size(self): return len(self.tok2id)
 
     def encode(self, text, max_len):
-        txt = self._tok_re.sub(r' \1\2 ', text)
-        toks = txt.split() + ['EOS']
-        ids = [self.tok2id.get(tok) for tok in toks]
-        if any(i is None for i in ids): raise ValueError(f"Unknown token in text: '{text}'")
+        spaced_text = self._tok_re.sub(r' \1 ', text)
+        tokens = spaced_text.split()
+        
+        flat_tokens = []
+        for tok in tokens:
+            if tok.isdigit() and len(tok) > 1:
+                flat_tokens.extend(list(tok))
+            else:
+                flat_tokens.append(tok)
+        
+        flat_tokens.append('EOS')
+        ids = [self.tok2id.get(t) for t in flat_tokens]
+        if any(i is None for i in ids): raise ValueError(f"Unknown token in text: '{text}' from tokens '{flat_tokens}'")
         if len(ids) < max_len: ids += [self._pad] * (max_len - len(ids))
         return ids[:max_len]
 
     def decode(self, ids):
-        out = [self.id2tok.get(i, '?') for i in ids if i not in (self._pad, self._eos)]
-        return " ".join(out)
+        tokens = [self.id2tok.get(i, '?') for i in ids if i not in (self._pad, self._eos)]
+        result = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token.isdigit():
+                num_str = token
+                i += 1
+                while i < len(tokens) and tokens[i].isdigit():
+                    num_str += tokens[i]
+                    i += 1
+                result.append(num_str)
+            else:
+                result.append(token)
+                i += 1
+        return " ".join(result)
 
 def parse_initial_numbers(prompt_text: str) -> Optional[List[int]]:
     match = re.search(r"IN: \[ (.*?) \]", prompt_text)
@@ -318,6 +339,8 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
     for _ in range(max_batches):
         try: x_batch, _ = next(it)
         except StopIteration: break
+        if x_batch.numel() == 0: 
+            continue
         for x in x_batch:
             ids = x.tolist()
             if tok.sep_id not in ids: continue
@@ -507,11 +530,15 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
         x = torch.cat([x, torch.tensor([[nxt]], device=device)], dim=1)
     return gen
 
-def compute_lengths(num_sources:int)->tuple[int,int,int]:
-    pre_sep = 5 * num_sources + 10
-    post_sep = 28 * (num_sources - 1) + 12
-    total = pre_sep + post_sep
-    return pre_sep, post_sep, total
+def token_count(tok, s: str) -> int:
+    spaced = tok._tok_re.sub(r' \1 ', s)
+    count = 1  # For EOS
+    for t in spaced.split():
+        if t.isdigit() and len(t) > 1:
+            count += len(t)
+        else:
+            count += 1
+    return count
 
 def setup_ddp():
     dist.init_process_group(backend="nccl")
@@ -538,12 +565,10 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
         
         config = HPARAMS.copy()
-        mi, mo, ml = compute_lengths(config['num_sources'])
-        config['max_input_len'], config['max_output_len'] = mi, mo
         
         ins, outs = [], []
         if global_rank == 0:
-            cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_sources_stateful_max{config['max_num_vocab']}_reasononly.pt"
+            cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_digit_tokenized.pt"
             tmp_filename = cache_filename + ".tmp.pt"
             if os.path.exists(cache_filename) and config['use_cached_data']:
                 print(f"[RANK 0] Loading data from cache: {cache_filename}")
@@ -558,22 +583,44 @@ def main():
         if is_ddp: dist.barrier()
 
         if global_rank != 0:
-            cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_sources_stateful_max{config['max_num_vocab']}_reasononly.pt"
+            cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_digit_tokenized.pt"
             tmp_filename = cache_filename + ".tmp.pt"
             load_path = cache_filename if os.path.exists(cache_filename) and config['use_cached_data'] else tmp_filename
             data = torch.load(load_path, map_location="cpu"); ins, outs = data['ins'], data['outs']
 
-        if is_ddp: dist.barrier()  # ensure all ranks finished loading the tmp/cache file
+        if is_ddp: dist.barrier()
         if global_rank == 0 and not config['use_cached_data']:
             try: os.remove(tmp_filename)
             except OSError: pass
 
         if not ins: raise RuntimeError("Data generation failed or cache is empty.")
         
-        tok = Tokenizer(max_num=config['max_num_vocab'])
+        tok = Tokenizer()
         config['vocab_size'] = tok.vocab_size
         
         seqs = [f"{inp} SEP {out}" for inp, out in zip(ins, outs)]
+
+        # Apply MAX_SEQ_LEN filter on ALL ranks (deterministic), and keep ins/outs aligned.
+        lens = [token_count(tok, s) for s in seqs]
+        max_len_seen = max(lens) if lens else 0
+        if max_len_seen > SAFE_MAX_LEN:
+            keep = [i for i, L in enumerate(lens) if L <= SAFE_MAX_LEN]
+            dropped = len(seqs) - len(keep)
+            if dropped > 0:
+                seqs = [seqs[i] for i in keep]
+                ins  = [ins[i]  for i in keep]
+                outs = [outs[i] for i in keep]
+                if global_rank == 0:
+                    print(f"[WARN] Dropped {dropped} sequences exceeding MAX_SEQ_LEN={SAFE_MAX_LEN} (max seen={max_len_seen}).")
+        if not seqs:
+            raise RuntimeError("All samples were filtered out by MAX_SEQ_LEN.")
+        if is_ddp: dist.barrier()
+
+        ml = max(token_count(tok, s) for s in seqs)
+        mi = max(token_count(tok, f"{inp} SEP") for inp in ins)
+        mo = ml - mi
+        config['max_input_len'], config['max_output_len'] = mi, mo
+        
         enc = [tok.encode(s, ml) for s in seqs]
         X = torch.tensor(enc, dtype=torch.long)
         
@@ -587,13 +634,20 @@ def main():
         device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
         loader_args = {'batch_size': config['batch_size'], 'num_workers': min(2, cpu_count()), 'pin_memory': device.type=='cuda'}
         
-        train_sampler = DistributedSampler(tr, num_replicas=world_size, rank=global_rank, shuffle=True) if is_ddp else None
-        train_loader = DataLoader(tr, sampler=train_sampler, shuffle=(train_sampler is None),
-                                  drop_last=True, persistent_workers=True if loader_args["num_workers"] > 0 else False,
+        if is_ddp:
+            ds_kwargs = dict(num_replicas=world_size, rank=global_rank, shuffle=True)
+            if "drop_last" in inspect.signature(DistributedSampler).parameters:
+                ds_kwargs["drop_last"] = True
+            train_sampler = DistributedSampler(tr, **ds_kwargs)
+        else:
+            train_sampler = None
+            
+        train_loader = DataLoader(tr, sampler=train_sampler, shuffle=False if is_ddp else True,
+                                  drop_last=False, persistent_workers=True if loader_args["num_workers"] > 0 else False,
                                   **loader_args)
         
         if global_rank == 0:
-            val_loader_eval = DataLoader(va, batch_size=config['batch_size'], shuffle=False, **loader_args)
+            val_loader_eval = DataLoader(va, shuffle=False, **loader_args)
 
         model = DecoderOnly(
             tok.vocab_size, config['d_model'], config['n_heads'], 
@@ -606,10 +660,8 @@ def main():
                 model, device_ids=[torch.cuda.current_device()], gradient_as_bucket_view=True
             )
         elif os.environ.get("ALLOW_COMPILE", "0") == "1":
-            try:
-                model = torch.compile(model); print("Model compiled successfully.")
-            except Exception:
-                print("Could not compile model.")
+            try: model = torch.compile(model); print("Model compiled successfully.")
+            except Exception: print("Could not compile model.")
 
         decay_params, no_decay_params, seen = [], [], set()
         for name, p in model.named_parameters():
@@ -625,8 +677,29 @@ def main():
         if global_rank == 0:
             width=62
             n_gpus = torch.cuda.device_count()
+            mi_print = max(mi - 1, 0)
             print(f"\n{'='*width}\n{'Run Configuration':^{width}}\n{'='*width}")
-            # ... (full printout here, as before) ...
+            print(f"{'--- System & Hardware ---':^{width}}")
+            print(f"{'PyTorch Version:':<28} {torch.__version__}")
+            print(f"{'Available GPUs:':<28} {n_gpus}")
+            print(f"\n{'--- Data & Vocab ---':^{width}}")
+            print(f"{'Total Dataset Size:':<28} {len(ds):,} samples")
+            print(f"{'Train / Validation Split:':<28} {len(tr):,} / {len(va):,}")
+            print(f"{'Problem Type:':<28} {config['num_sources']}-number Countdown")
+            print(f"{'Vocabulary Size:':<28} {config['vocab_size']} tokens")
+            print(f"\n{'--- Model Architecture ---':^{width}}")
+            print(f"{'d_model / n_heads / n_layers:':<28} {config['d_model']} / {config['n_heads']} / {config['n_layers']}")
+            print(f"{'Total Parameters:':<28} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} ")
+            print(f"{'Max Sequence Length:':<28} {ml} (prompt={mi_print}, solution={mo})")
+            print(f"{'Seq Len Cap (env):':<28} {SAFE_MAX_LEN}")
+            print(f"\n{'--- Training Hyperparameters ---':^{width}}")
+            print(f"{'Epochs (Max):':<28} {config['epochs']}")
+            print(f"{'Early Stopping Patience:':<28} {config['patience']}")
+            print(f"{'Batch Size:':<28} {config['batch_size']}")
+            print(f"{'Learning Rate:':<28} {config['lr']}")
+            print(f"{'Weight Decay:':<28} {config['weight_decay']}")
+            print(f"{'Gradient Checkpointing:':<28} {'Enabled' if config['use_gradient_checkpointing'] else 'Disabled'}")
+            print(f"{'Random Seed:':<28} {config['seed']}")
             print(f"{'='*width}\n")
 
         if global_rank == 0: print(f"Starting training with {'DDP' if is_ddp else 'a single GPU'}...")
@@ -699,4 +772,5 @@ def main():
             cleanup_ddp()
 
 if __name__ == "__main__":
-    main()
+    with Logger('run_countdown_experiment.log'):
+        main()
