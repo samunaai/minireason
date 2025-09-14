@@ -73,6 +73,7 @@ HPARAMS = {
     "train_split_ratio": 0.9,
     "lambda_honesty": 0.5,        # Weight for the honesty loss component
     "lambda_summary": 0.25,       # Weight for EXPR summary (expression) CE
+    "lambda_transition": 0.25,    # Weight for final post-state consistency
     "use_gradient_checkpointing": False,
     "seed": 42,
     # --- Stochastic decision, deterministic execution (inference) ---
@@ -433,6 +434,7 @@ class DecoderOnly(nn.Module):
         self.head = nn.Linear(d, vocab, bias=False)
         self.head.weight = self.tok.weight
         self.valid_head = nn.Linear(d, 1) # Honesty head for arithmetic validation
+        self.trans_head = nn.Linear(d, 1) # Final transition consistency
         self.max_len = max_len
         self.register_buffer("pos_idx", torch.arange(max_len))
 
@@ -454,39 +456,31 @@ class DecoderOnly(nn.Module):
     def forward(self, x):
         h = self.forward_features(x)
         return self.head(h)
+ 
+def _all_eq_positions(ids, tok: Tokenizer, end_limit: Optional[int] = None):
+    """Indices of every '=' token before EXPR (or up to end_limit)."""
+    eq_id = tok.tok2id['=']
+    if end_limit is None:
+        try:
+            end_limit = ids.index(tok.tok2id['EXPR'])
+        except ValueError:
+            end_limit = len(ids)
+    return [i for i, t in enumerate(ids[:end_limit]) if t == eq_id]
 
-def _last_step_spans(token_ids: torch.Tensor, tok: Tokenizer) -> Optional[Tuple[int, int, int]]:
-    """Returns indices: eq_idx, post_state_start, post_state_end (exclusive); None if not found.
-       We search up to EXPR if present, otherwise up to EOS."""
-    ids = token_ids.tolist()
-    end = len(ids)
-    if tok.tok2id.get('EXPR') in ids:
-        try: end = ids.index(tok.tok2id['EXPR'])
-        except ValueError: end = len(ids)
-    try: eq_idx = max(i for i, t in enumerate(ids[:end]) if t == tok.tok2id['='])
-    except ValueError: return None
-    ARROW, LBR, RBR = tok.tok2id['->'], tok.tok2id['['], tok.tok2id[']']
-    try:
-        arrow2 = ids.index(ARROW, eq_idx + 1)
-        lbr = ids.index(LBR, arrow2 + 1)
-        rbr = ids.index(RBR, lbr + 1)
-    except ValueError: return None
-    return eq_idx, lbr, rbr + 1
+def _all_equations_ok(text: str) -> List[float]:
+    """Parse all 'a op b = c' before EXPR; return 1.0/0.0 per equation."""
+    text = text.split("EXPR", 1)[0]
+    eqs = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*([0-9]+)", text)
+    outs = []
+    for a_s, op, b_s, c_s in eqs:
+        a, b, c = int(a_s), int(b_s), int(c_s)
+        if op == '+': ok = (a + b == c)
+        elif op == '-': ok = (a > b and a - b == c)
+        elif op == '*': ok = (a > 1 and b > 1 and a * b == c)
+        else: ok = (b >= 1 and a % b == 0 and a // b == c)
+        outs.append(1.0 if ok else 0.0)
+    return outs
 
-def _honesty_target_from_gold(token_ids: torch.Tensor, tok: Tokenizer) -> float:
-    """Computes if the last equation in the gold sequence is arithmetically correct."""
-    s = tok.decode(token_ids.tolist())
-    # ignore anything after EXPR (if present)
-    s = s.split("EXPR", 1)[0]
-    m = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*(\d+)", s)
-    if not m: return 0.0
-    a, op, b, c = m[-1]
-    a,b,c = int(a), int(b), int(c)
-    if op == '+': ok = (a + b == c)
-    elif op == '-': ok = (a > b and a - b == c)
-    elif op == '*': ok = (a > 1 and b > 1 and a * b == c)
-    else: ok = (b >= 1 and a % b == 0 and a // b == c)
-    return 1.0 if ok else 0.0
 
 def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
     h_for_pred = hidden_states[:, :-1, :].contiguous()
@@ -525,17 +519,23 @@ def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
         ce_correct = (logits.argmax(-1) == selected_t).sum().item()
         ce_tokens = selected_t.numel()
 
+
+    # === Arithmetic validity at ALL equations (reuse valid_head) ===
     val_logits, val_targets = [], []
     for b in range(B):
-        spans = _last_step_spans(targets[b], tok)
-        if spans is None: continue
-        eq_idx, _, _ = spans
-        t_eq = eq_idx - 1
-        if 0 <= t_eq < Tm1:
-            val_logits.append(hidden_states[b, t_eq, :])
-            val_targets.append(_honesty_target_from_gold(targets[b], tok))
+        ids_b = targets[b].tolist()
+        eq_pos = _all_eq_positions(ids_b, tok)
+        if not eq_pos:
+            continue
+        labels = _all_equations_ok(tok.decode(ids_b))
+        m = min(len(eq_pos), len(labels))
+        for j in range(m):
+            t_eq = eq_pos[j] - 1  # read just before '='
+            if 0 <= t_eq < Tm1:
+                val_logits.append(hidden_states[b, t_eq, :])
+                val_targets.append(labels[j])
     if val_logits:
-        val_logits = torch.stack(val_logits, dim=0)
+        val_logits  = torch.stack(val_logits, dim=0)
         val_targets = torch.tensor(val_targets, device=targets.device, dtype=torch.float32)
         h_loss = F.binary_cross_entropy_with_logits(model.valid_head(val_logits).squeeze(-1), val_targets)
     else:
@@ -558,7 +558,62 @@ def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
     else:
         summary_loss = F.cross_entropy(model.head(sum_h), sum_t)
 
-    total_loss = ce_loss + lambda_honesty * h_loss + HPARAMS.get("lambda_summary", 0.0) * summary_loss
+    # === Final post-state transition consistency (prevent copying TGT) ===
+    # Label 1 iff the last post-state equals multiset(before) - {a,b} + {c} and math is valid.
+    # Feature location: token just BEFORE the final '[' following the last '='.
+    trans_logits, trans_targets = [], []
+    for b in range(B):
+        ids_b = targets[b].tolist()
+        spans = _last_step_spans(targets[b], tok)
+        if spans is None:
+            continue
+        _, post_l, _ = spans
+        anchor = post_l - 1
+        if not (0 <= anchor < Tm1):
+            continue
+        # parse last step from text for the label
+        s_prog = tok.decode(ids_b).split("EXPR", 1)[0]
+        steps = re.findall(
+            r"\[\s*([^\]]*?)\s*\]\s*->\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*(\d+)\s*->\s*\[\s*([^\]]*?)\s*\]",
+            s_prog
+        )
+        if not steps:
+            continue
+        before_str, a_s, op, b_s, c_s, after_str = steps[-1]
+        a, b2, c = int(a_s), int(b_s), int(c_s)
+        before = Counter(int(z) for z in re.split(r"[,\s]+", before_str.strip()) if z)
+        after  = Counter(int(z) for z in re.split(r"[,\s]+", after_str.strip()) if z)
+        ok_math = (
+            (op == '+' and a + b2 == c) or
+            (op == '-' and a > b2 and a - b2 == c) or
+            (op == '*' and a > 1 and b2 > 1 and a * b2 == c) or
+            (op == '/' and b2 >= 1 and a % b2 == 0 and a // b2 == c)
+        )
+        ok_trans = False
+        if ok_math:
+            cur = before.copy()
+            if cur.get(a, 0) and cur.get(b2, 0) - (a == b2) >= 0:
+                cur[a] -= 1
+                if cur[a] == 0: cur.pop(a, None)
+                cur[b2] -= 1
+                if cur[b2] == 0: cur.pop(b2, None)
+                cur[c] += 1
+                ok_trans = (cur == after)
+        trans_logits.append(hidden_states[b, anchor, :])
+        trans_targets.append(1.0 if (ok_math and ok_trans) else 0.0)
+    if trans_logits:
+        trans_logits  = torch.stack(trans_logits, dim=0)
+        trans_targets = torch.tensor(trans_targets, device=targets.device, dtype=torch.float32)
+        trans_loss = F.binary_cross_entropy_with_logits(model.trans_head(trans_logits).squeeze(-1), trans_targets)
+    else:
+        trans_loss = hidden_states.sum() * 0.0
+
+    total_loss = (
+        ce_loss
+        + lambda_honesty * h_loss
+        + HPARAMS.get("lambda_summary", 0.0) * summary_loss
+        + HPARAMS.get("lambda_transition", 0.0) * trans_loss
+    )
     return total_loss, ce_correct, ce_tokens
 
 def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None, amp_dtype=torch.float32, use_amp=False):
