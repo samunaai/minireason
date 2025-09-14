@@ -44,11 +44,12 @@ import matplotlib
 os.environ.setdefault("MPLBACKEND","Agg"); matplotlib.use(os.environ["MPLBACKEND"])
 import matplotlib.pyplot as plt
 
- torch.backends.cuda.matmul.allow_tf32 = True
- torch.set_float32_matmul_precision("high")
- torch.backends.cuda.enable_flash_sdp(True)
- torch.backends.cuda.enable_mem_efficient_sdp(True)
- torch.backends.cuda.enable_math_sdp(False)  # prefer Flash/MemEfficient
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(False)  # prefer Flash/MemEfficient
 
 # =========================
 # CONFIGURATION & HYPERPARAMETERS
@@ -71,6 +72,7 @@ HPARAMS = {
     "weight_decay": 0.01,
     "train_split_ratio": 0.9,
     "lambda_honesty": 0.5,        # Weight for the honesty loss component
+    "lambda_answer": 0.25,       # weight for ANSWER digits repetition
     "use_gradient_checkpointing": False,
     "seed": 42,
     # --- Stochastic decision, deterministic execution (inference) ---
@@ -152,13 +154,12 @@ class CountdownSolver:
                 else:
                     self._dfs(tuple(rest), target, new_steps, memo, max_depth, max_solutions)
 
-def steps_to_program(initial_numbers: List[int], solution_steps: List) -> Optional[str]:
+def steps_to_program(initial_numbers: List[int], solution_steps: List, target: int) -> Optional[str]:
     if solution_steps is None: return None
     if not solution_steps:
-        # For problems where target is one of the source numbers
-        random_vocab_char = random.choice(list('0123456789+-*/'))
-        return f"ANSWER {random_vocab_char}"
-
+        # Target is one of the source numbers: repeat the true target
+        return f"ANSWER {target}"
+ 
     out = []
     current_numbers = Counter(initial_numbers)
     for n1, op, n2, res in solution_steps:
@@ -176,9 +177,9 @@ def steps_to_program(initial_numbers: List[int], solution_steps: List) -> Option
     program_str = " ".join(out)
     program_str = re.sub(r"\s*;\s*$", "", program_str)
     
-    # Append ANSWER and a random token for the RL placeholder
-    random_vocab_char = random.choice(list('0123456789+-*/[,]='))
-    program_str += f" ; ANSWER {random_vocab_char}"
+    # Append ANSWER and the final value’s digits
+    final_val = solution_steps[-1][3]  # res of last step
+    program_str += f" ; ANSWER {final_val}"
     return program_str
 
 def _gen_chunk(args):
@@ -207,7 +208,7 @@ def _gen_chunk(args):
         
         in_list = ', '.join(map(str, source_numbers))
         for steps in sols:
-            program = steps_to_program(source_numbers, steps)
+            program = steps_to_program(source_numbers, steps, target)
             if program is None: continue
             inputs.append(f"IN: [ {in_list} ] TGT: {target}")
             outputs.append(program)
@@ -468,6 +469,7 @@ def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
         T = targets.size(1)
         ans_pos = torch.where(ans_tok.any(dim=1), ans_pos, torch.full_like(ans_pos, T))
         # FIX 1: CE mask off-by-one before ANSWER
+        # Supervise solution tokens (between SEP and ANSWER)
         ce_mask = (idx + 1 > sep_pos.unsqueeze(1)) & (idx + 1 < ans_pos.unsqueeze(1)) \
                   & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
         drop_mask = torch.zeros_like(ce_mask)
@@ -511,14 +513,32 @@ def compute_masked_loss(model, hidden_states, targets, tok, lambda_honesty):
     else:
         h_loss = hidden_states.sum() * 0.0
 
-    total_loss = ce_loss + lambda_honesty * h_loss
+    # ===== ANSWER repetition loss (digits after ANSWER until EOS) =====
+    with torch.no_grad():
+        # Positions t in h_for_pred/t_for_pred correspond to predicting targets[:, t+1]
+        Tm1 = t_for_pred.size(1)
+        idx = torch.arange(Tm1, device=targets.device).unsqueeze(0)  # [1, T-1]
+        ans_pos = (targets == tok.tok2id['ANSWER']).int().argmax(dim=1)          # [B]
+        eos_pos = (targets == tok.eos_id).int().argmax(dim=1)                    # [B] first EOS
+        in_window = (idx >= ans_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1))
+        digit_ids = torch.tensor([tok.tok2id[str(d)] for d in range(10)], device=targets.device)
+        is_digit = (t_for_pred.unsqueeze(-1) == digit_ids).any(-1)               # [B, T-1]
+        answer_mask = in_window & is_digit
+    ans_h = h_for_pred[answer_mask]
+    ans_t = t_for_pred[answer_mask]
+    if ans_t.numel() == 0:
+        ans_loss = hidden_states.sum() * 0.0
+    else:
+        ans_logits = model.head(ans_h)
+        ans_loss = F.cross_entropy(ans_logits, ans_t)
+
+    total_loss = ce_loss + lambda_honesty * h_loss + HPARAMS.get("lambda_answer", 0.0) * ans_loss
     return total_loss, ce_correct, ce_tokens
 
-def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None):
+def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None, amp_dtype=torch.float32, use_amp=False):
     model.train(is_train)
     batch_losses, total_correct, total_tokens = [], 0, 0
     model_to_call = model.module if hasattr(model, "module") else model
-    use_amp = device.type=='cuda' and torch.cuda.is_bf16_supported()
     lambda_honesty = HPARAMS['lambda_honesty']
 
     for x, y in loader:
@@ -546,20 +566,19 @@ def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None):
     return acc, avg_loss
 
 @inference_mode()
-def sample_one(model, tokenizer, prompt_ids, max_out, device):
+def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.float32, use_amp=False):
     base_model = model.module if hasattr(model, "module") else model
     base_model.eval()
     x = torch.tensor([prompt_ids], device=device)
     gen = []
     stop_ids = {tokenizer.eos_id, tokenizer.pad_id}
-    use_amp = device.type=='cuda' and torch.cuda.is_bf16_supported()
     id2tok, tok2id = tokenizer.id2tok, tokenizer.tok2id
     stochastic_steps = int(HPARAMS.get("stochastic_steps", 0))
     temp_ops, top_p_ops, top_k_ops = float(HPARAMS.get("temperature_ops", 0.7)), float(HPARAMS.get("top_p_ops", 1.0)), int(HPARAMS.get("top_k_ops", 0))
 
     decoded = []; steps_done, seen_eq_this_step = 0, False
     awaiting_first_digit, operator_sample_pending = False, False
-    seen_answer, post_answer_emitted = False, 0
+    seen_answer, answer_digits_emitted = False, 0
 
     def _multinomial_from_logits(logits_1d: torch.Tensor) -> int:
         probs = torch.softmax(logits_1d / max(1e-6, temp_ops), dim=-1)
@@ -578,14 +597,14 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
     for _ in range(min(max_out, base_model.max_len - len(prompt_ids))):
         if x.size(1) >= base_model.max_len: break
         with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp):
-            logits = base_model(x)[:, -1, :].squeeze(0)
+            logits = base_model(x)[:, -1, :].squeeze(0).float()
         
-        # FIX 2: Block EOS/PAD on the single post-ANSWER token
-        if seen_answer and post_answer_emitted == 0:
-            logits[tokenizer.eos_id] = float("-inf")
-            logits[tokenizer.pad_id] = float("-inf")
-            # also avoid repeating the control token
-            logits[tokenizer.tok2id['ANSWER']] = float("-inf")
+        # ANSWER phase: only allow digits (and EOS to finish)
+        if seen_answer:
+            keep = [tokenizer.tok2id[str(d)] for d in range(10)] + [tokenizer.eos_id]
+            mask = torch.full_like(logits, float("-inf"))
+            mask[keep] = 0.0
+            logits = logits + mask
             
         if steps_done < stochastic_steps and (awaiting_first_digit or operator_sample_pending):
             nxt = _multinomial_from_logits(logits)
@@ -598,8 +617,9 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device):
         decoded.append(tok)
 
         if seen_answer:
-            post_answer_emitted += 1
-            if post_answer_emitted >= 1: break
+            if nxt == tokenizer.eos_id or not tok.isdigit():
+                break
+            answer_digits_emitted += 1
         if tok == 'ANSWER': seen_answer = True
 
         if steps_done < stochastic_steps and not awaiting_first_digit and not operator_sample_pending:
@@ -624,7 +644,8 @@ def setup_ddp():
     backend = "nccl" if torch.cuda.is_available() else "gloo"
     dist.init_process_group(backend=backend)
     local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
     return local_rank, dist.get_rank(), dist.get_world_size()
 
 def cleanup_ddp():
@@ -708,9 +729,7 @@ def main():
         try:
             opt = torch.optim.AdamW(optim_groups, lr=config['lr'], fused=True)
         except TypeError:
-            opt = torch.optim.AdamW(optim_groups, lr=config['lr'])
-        use_bf16 = (device.type == 'cuda') and torch.cuda.is_bf16_supported()
-        scaler = torch.cuda.amp.GradScaler(enabled=(device.type == 'cuda' and not use_bf16))
+            opt = torch.optim.AdamW(optim_groups, lr=config['lr']) 
 
         if global_rank == 0:
             width=62; mi_print = max(mi - 1, 0)
@@ -736,10 +755,10 @@ def main():
         
         for ep in range(config['epochs']):
             if is_ddp: train_sampler.set_epoch(ep)
-            tr_acc, tr_loss = run_epoch(True, model, train_loader, device, tok, opt, scaler)
+            tr_acc, tr_loss = run_epoch(True, model, train_loader, device, tok, opt, scaler, amp_dtype, use_amp)
             val_loss_tensor = torch.tensor(0.0, device=device)
             if global_rank == 0:
-                va_acc, va_loss = run_epoch(False, model, val_loader_eval, device, tok)
+                va_acc, va_loss = run_epoch(False, model, val_loader_eval, device, tok, None, None, amp_dtype, use_amp)
                 val_loss_tensor.fill_(va_loss)
                 history['train_loss'].append(tr_loss); history['val_loss'].append(va_loss)
                 history['train_acc'].append(tr_acc); history['val_acc'].append(va_acc)
@@ -771,7 +790,7 @@ def main():
             for i in range(min(NUM_INFERENCE_EXAMPLES, len(va))):
                 x, _ = va[i]; ids = x.tolist(); sep_idx = ids.index(tok.sep_id)
                 prompt_ids = [t for t in ids[:sep_idx+1] if t != tok.pad_id]
-                gen_ids = sample_one(final_model, tok, prompt_ids, config['max_output_len'], device)
+                gen_ids = sample_one(final_model, tok, prompt_ids, config['max_output_len'], device, amp_dtype, use_amp)
                 logging.info(f"\n--- Example #{i+1} ---\nProblem:      {tok.decode(prompt_ids).replace(' SEP', '')}\nTrue Sol:     {tok.decode([t for t in ids[sep_idx+1:] if t != tok.pad_id])}\nGenerated Sol: {tok.decode(gen_ids)}")
     finally:
         if is_ddp: cleanup_ddp()
