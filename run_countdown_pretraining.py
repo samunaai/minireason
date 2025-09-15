@@ -518,7 +518,49 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         # Base CE mask on (SEP, EOS)
         base_ce_mask = (idx + 1 > sep_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
                        & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
+        ce_mask = base_ce_mask.clone()
 
+        # ===== A) Remove CE on result digits after every "=" (before EXPR) =====
+        eq_id = tok.tok2id['=']
+        digit_ids = [tok.tok2id[str(d)] for d in range(10)]
+        for b in range(B):
+            ids_b = targets[b].tolist()
+            try:
+                end_limit = ids_b.index(tok.tok2id['EXPR'])
+            except ValueError:
+                end_limit = len(ids_b)
+            j = 0
+            while j < end_limit:
+                if ids_b[j] == eq_id:
+                    k = j + 1
+                    while k < end_limit and ids_b[k] in digit_ids:
+                        if k - 1 < ce_mask.size(1):
+                            ce_mask[b, k - 1] = False  # do not train result digits with CE
+                        k += 1
+                    j = k
+                else:
+                    j += 1
+
+        # ===== B) Stop CE on trailing EXPR tokens and upweight EOS right after final ')' =====
+        RP = tok.tok2id[')']
+        ce_weights = torch.ones_like(ce_mask, dtype=hidden_states.dtype)
+        for b in range(B):
+            ids_b = targets[b].tolist()
+            try:
+                eos_idx = ids_b.index(tok.eos_id)
+            except ValueError:
+                continue
+            rpars = [i for i,t in enumerate(ids_b[:eos_idx]) if t == RP]
+            if not rpars:
+                continue
+            r = rpars[-1]
+            # remove CE supervision for any tokens after last ')' and before EOS
+            for j in range(r + 1, eos_idx):
+                if j - 1 < ce_mask.size(1):
+                    ce_mask[b, j - 1] = False
+            # upweight CE exactly where EOS must be predicted (time r -> target r+1)
+            if r < ce_weights.size(1):
+                ce_weights[b, r] = 5.0  # tuneable
         # Build a mask for the final post-state bracket span ONLY (last transition)
         last_transition_mask = torch.zeros_like(base_ce_mask)
         for b in range(B):
@@ -540,14 +582,15 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         # Base CE excludes the last transition span to avoid double counting
         ce_mask = base_ce_mask & (~last_transition_mask)
 
-    selected_h = h_for_pred[ce_mask]; selected_t = t_for_pred[ce_mask]
+    selected_h = h_for_pred[ce_mask]; selected_t = t_for_pred[ce_mask]; selected_w = ce_weights[ce_mask]
     # debug: supervised token count
     # logging.debug(f"supervised_tokens={int(ce_mask.sum().item())}")
     if selected_t.numel() == 0:
         base_cross_entropy, ce_correct, ce_tokens = hidden_states.sum() * 0.0, 0, 0
     else:
         logits = model.head(selected_h)
-        base_cross_entropy = F.cross_entropy(logits, selected_t)
+        per_tok = F.cross_entropy(logits, selected_t, reduction='none')
+        base_cross_entropy = (per_tok * selected_w).mean()
         ce_correct = (logits.argmax(-1) == selected_t).sum().item()
         ce_tokens = selected_t.numel()
 
@@ -629,11 +672,36 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         last_equation_loss = torch.stack(losses).mean()
     else:
         last_equation_loss = hidden_states.sum() * 0.0
+    # Optional: EOS margin auxiliary (sharpen stopping). Keep weight small.
+    m = 2.0
+    eos_margin_losses = []
+    with torch.no_grad():
+        eos_targets = []
+        for b in range(B):
+            ids_b = targets[b].tolist()
+            try:
+                eos_idx = ids_b.index(tok.eos_id)
+            except ValueError:
+                continue
+            rpars = [i for i,t in enumerate(ids_b[:eos_idx]) if t == RP]
+            if not rpars: continue
+            eos_targets.append((b, rpars[-1]))
+    for b, r in eos_targets:
+        if 0 <= r < h_for_pred.size(1):
+            z = model.head(h_for_pred[b, r:r+1, :]).squeeze(0)  # (V,)
+            eos_logit = z[tok.eos_id]
+            z_ = z.clone(); z_[tok.eos_id] = -1e9
+            mx = z_.max()
+            eos_margin_losses.append(F.relu(m + mx - eos_logit))
+    eos_margin_loss = torch.stack(eos_margin_losses).mean() if eos_margin_losses else hidden_states.sum()*0.0
+
     total_loss = (
         base_cross_entropy
         + HPARAMS.get("lambda_transition_ce", 0.0) * last_transition_loss
         + HPARAMS.get("lambda_final_expr", 0.0) * final_expression_loss
         + HPARAMS.get("lambda_last_equation", 0.0) * last_equation_loss
+        + 1.0 * eos_margin_loss  # tune or drop to 0.0
+
     )
     return total_loss, ce_correct, ce_tokens
 
