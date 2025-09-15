@@ -1,0 +1,27 @@
+Generating new dataset (cache miss or invalid)...
+Starting parallel data generation for 100,000 samples on 64 workers (256 tasks)...
+Generated 100,000 samples from 132,681 total attempts (75.4% acceptance).
+  Total Rejects: solver=10,001, program(filter)=22,620. Avg steps: 5.00.
+Saving newly generated dataset to 'countdown_data_100000_samples_6_sources_stateful_max999.pt' for future runs.
+Max actual encoded length: 110 (configured max_len: 192)
+Using 4 GPUs via DataParallel.
+
+==================================================
+                Run Configuration                 
+==================================================
+PyTorch Version:          2.7.1+cu126
+Using GPUs:               4
+--------------------------------------------------
+Dataset Size:             100,000 samples
+Problem Type:             6-number Countdown
+Vocabulary Size:          1015 tokens
+--------------------------------------------------
+Model Parameters:         947,840 total
+Max Sequence Length:      192 (pre=40, post=152)
+--------------------------------------------------
+Epochs:                   1000 (patience=20)
+Global Batch Size:        32
+Learning Rate:            0.0003
+==================================================
+
+Training with SDP backend enabled...

@@ -1,0 +1,164 @@
+Starting data generation...
+Starting parallel data generation for 100,000 samples on 64 workers (256 tasks)...
+Generated 100,249 solutions from 38,521 problem draws (~2.60 solutions/draw, 92.4% draws with ≥1 solution).
+  Total Rejects (solver): 2,889.
+Saving generated data to: countdown_data_100000_samples_6_K3_digit_tokenized.pt
+[RANK 0] Loading data from countdown_data_100000_samples_6_K3_digit_tokenized.pt
+
+==============================================================
+                      Run Configuration                       
+==============================================================
+                  --- System & Hardware ---                   
+PyTorch Version:             2.7.1+cu126
+Available GPUs:              4
+DDP Enabled:                 No
+
+                     --- Data & Vocab ---                     
+Total Dataset Size:          100,000 samples
+Train / Validation Split:    90,000 / 10,000
+Problem Type:                6-number Countdown
+Vocabulary Size:             26 tokens
+
+                  --- Model Architecture ---                  
+d_model / n_heads / n_layers: 128 / 4 / 4
+Total Parameters:            827,904 
+Max Sequence Length:         244 (prompt=26, solution=217)
+Seq Len Cap (env):           2048
+
+               --- Training Hyperparameters ---               
+Epochs (Max):                1000
+Early Stopping Patience:     20
+Batch Size:                  32
+Learning Rate:               0.0003
+Weight Decay:                0.01
+Gradient Checkpointing:      Disabled
+Random Seed:                 42
+Max Solutions per Problem:   3
+==============================================================
+
+Starting training on rank 0...
+Epoch 0001 | Train loss 1.3267 | Val loss 0.4231
+  -> New best val loss. Checkpoint saved.
+Epoch 0002 | Train loss 0.2895 | Val loss 0.2139
+  -> New best val loss. Checkpoint saved.
+Epoch 0003 | Train loss 0.1780 | Val loss 0.1542
+  -> New best val loss. Checkpoint saved.
+Epoch 0004 | Train loss 0.1331 | Val loss 0.1221
+  -> New best val loss. Checkpoint saved.
+Epoch 0005 | Train loss 0.1107 | Val loss 0.1054
+  -> New best val loss. Checkpoint saved.
+Epoch 0006 | Train loss 0.0986 | Val loss 0.0989
+  -> New best val loss. Checkpoint saved.
+Epoch 0007 | Train loss 0.0913 | Val loss 0.0917
+  -> New best val loss. Checkpoint saved.
+Epoch 0008 | Train loss 0.0863 | Val loss 0.0858
+  -> New best val loss. Checkpoint saved.
+Epoch 0009 | Train loss 0.0829 | Val loss 0.0829
+  -> New best val loss. Checkpoint saved.
+Epoch 0010 | Train loss 0.0802 | Val loss 0.0836
+Epoch 0011 | Train loss 0.0774 | Val loss 0.0773
+  -> New best val loss. Checkpoint saved.
+Epoch 0012 | Train loss 0.0752 | Val loss 0.0766
+  -> New best val loss. Checkpoint saved.
+Epoch 0013 | Train loss 0.0728 | Val loss 0.0741
+  -> New best val loss. Checkpoint saved.
+Epoch 0014 | Train loss 0.0710 | Val loss 0.0722
+  -> New best val loss. Checkpoint saved.
+Epoch 0015 | Train loss 0.0697 | Val loss 0.0728
+Epoch 0016 | Train loss 0.0686 | Val loss 0.0715
+  -> New best val loss. Checkpoint saved.
+Epoch 0017 | Train loss 0.0675 | Val loss 0.0715
+  -> New best val loss. Checkpoint saved.
+Epoch 0018 | Train loss 0.0668 | Val loss 0.0692
+  -> New best val loss. Checkpoint saved.
+Epoch 0019 | Train loss 0.0660 | Val loss 0.0694
+Epoch 0020 | Train loss 0.0654 | Val loss 0.0681
+  -> New best val loss. Checkpoint saved.
+Epoch 0021 | Train loss 0.0648 | Val loss 0.0680
+  -> New best val loss. Checkpoint saved.
+Epoch 0022 | Train loss 0.0642 | Val loss 0.0678
+  -> New best val loss. Checkpoint saved.
+Epoch 0023 | Train loss 0.0636 | Val loss 0.0666
+  -> New best val loss. Checkpoint saved.
+Epoch 0024 | Train loss 0.0632 | Val loss 0.0665
+  -> New best val loss. Checkpoint saved.
+Epoch 0025 | Train loss 0.0627 | Val loss 0.0671
+Epoch 0026 | Train loss 0.0622 | Val loss 0.0667
+Epoch 0027 | Train loss 0.0618 | Val loss 0.0659
+  -> New best val loss. Checkpoint saved.
+Epoch 0028 | Train loss 0.0612 | Val loss 0.0665
+Epoch 0029 | Train loss 0.0609 | Val loss 0.0655
+  -> New best val loss. Checkpoint saved.
+Epoch 0030 | Train loss 0.0604 | Val loss 0.0662
+Epoch 0031 | Train loss 0.0599 | Val loss 0.0648
+  -> New best val loss. Checkpoint saved.
+Epoch 0032 | Train loss 0.0595 | Val loss 0.0652
+Epoch 0033 | Train loss 0.0591 | Val loss 0.0652
+Epoch 0034 | Train loss 0.0586 | Val loss 0.0644
+  -> New best val loss. Checkpoint saved.
+Epoch 0035 | Train loss 0.0582 | Val loss 0.0647
+Epoch 0036 | Train loss 0.0577 | Val loss 0.0655
+Epoch 0037 | Train loss 0.0573 | Val loss 0.0641
+  -> New best val loss. Checkpoint saved.
+Epoch 0038 | Train loss 0.0568 | Val loss 0.0651
+Epoch 0039 | Train loss 0.0564 | Val loss 0.0645
+Epoch 0040 | Train loss 0.0558 | Val loss 0.0653
+Epoch 0041 | Train loss 0.0553 | Val loss 0.0652
+Epoch 0042 | Train loss 0.0548 | Val loss 0.0648
+Epoch 0043 | Train loss 0.0543 | Val loss 0.0649
+Epoch 0044 | Train loss 0.0537 | Val loss 0.0646
+Epoch 0045 | Train loss 0.0532 | Val loss 0.0643
+Epoch 0046 | Train loss 0.0527 | Val loss 0.0645
+Epoch 0047 | Train loss 0.0521 | Val loss 0.0656
+Epoch 0048 | Train loss 0.0515 | Val loss 0.0652
+Epoch 0049 | Train loss 0.0509 | Val loss 0.0649
+Epoch 0050 | Train loss 0.0503 | Val loss 0.0652
+Epoch 0051 | Train loss 0.0499 | Val loss 0.0657
+Epoch 0052 | Train loss 0.0492 | Val loss 0.0653
+Epoch 0053 | Train loss 0.0487 | Val loss 0.0653
+Epoch 0054 | Train loss 0.0481 | Val loss 0.0656
+Epoch 0055 | Train loss 0.0476 | Val loss 0.0660
+Epoch 0056 | Train loss 0.0470 | Val loss 0.0656
+Epoch 0057 | Train loss 0.0465 | Val loss 0.0659
+Stopping early.
+
+Training plot saved to countdown_training_plot.png
+
+Loading best model for final evaluation...
+
+--- Final Evaluation Metrics ---
+  Program Exact Match:         0.00%
+  Verified Answer Accuracy:    25.78%
+  Op Validity Rate:            54.17%
+  Op State-Consistency Rate:   0.00%
+----------------------------------
+on 128 validation samples.
+
+--- Inference Examples ---
+
+--- Example #1 ---
+Problem:      IN: [ 8, 4, 3, 2, 100, 75 ] TGT: 644
+True Sol:     [ 2, 3, 4, 8, 75, 100 ] -> 75 + 100 = 175 -> [ 2, 3, 4, 8, 175 ] ; [ 2, 3, 4, 8, 175 ] -> 2 * 3 = 6 -> [ 4, 6, 8, 175 ] ; [ 4, 6, 8, 175 ] -> 6 + 8 = 14 -> [ 4, 14, 175 ] ; [ 4, 14, 175 ] -> 175 - 14 = 161 -> [ 4, 161 ] ; [ 4, 161 ] -> 4 * 161 = 644 -> [ 644 ] ; ANSWER
+Generated Sol: [ 2, 3, 4, 8, 75, 100 ] -> 4 + 100 = 1041074 -> [ 2, 3, 8, 75, 1074 ] ; [ 2, 3, 8, 75, 1074 ] -> 8 + 75 = 83 -> [ 2, 3, 83, 1074 ] ; [ 2, 3, 83, 1074 ] -> 2 * 83 = 166 -> [ 3, 166, 1074 ] ; [ 3, 166, 1074 ] -> 166 + 1074 = 1230 -> [ 3, 1230 ] ; [ 3, 1230 ] -> 1230 / 3 = 644 -> [ 644 ] ; ANSWER
+
+--- Example #2 ---
+Problem:      IN: [ 3, 75, 50, 2, 10, 100 ] TGT: 702
+True Sol:     [ 2, 3, 10, 50, 75, 100 ] -> 2 + 100 = 102 -> [ 3, 10, 50, 75, 102 ] ; [ 3, 10, 50, 75, 102 ] -> 10 * 75 = 750 -> [ 3, 50, 102, 750 ] ; [ 3, 50, 102, 750 ] -> 3 * 50 = 150 -> [ 102, 150, 750 ] ; [ 102, 150, 750 ] -> 150 - 102 = 48 -> [ 48, 750 ] ; [ 48, 750 ] -> 750 - 48 = 702 -> [ 702 ] ; ANSWER
+Generated Sol: [ 2, 3, 10, 50, 75, 100 ] -> 10 * 50 = 5005050 -> [ 2, 3, 75, 100, 5000 ] ; [ 2, 3, 75, 100, 5000 ] -> 5000 - 2 = 4998 -> [ 3, 75, 100, 4998 ] ; [ 3, 75, 100, 4998 ] -> 4998 / 3 = 1636 -> [ 75, 100, 1636 ] ; [ 75, 100, 1636 ] -> 1636 - 100 = 1536 -> [ 75, 1536 ] ; [ 75, 1536 ] -> 1536 - 75 = 702 -> [ 702 ] ; ANSWER
+
+--- Example #3 ---
+Problem:      IN: [ 50, 75, 2, 100, 10, 6 ] TGT: 271
+True Sol:     [ 2, 6, 10, 50, 75, 100 ] -> 50 * 75 = 3750 -> [ 2, 6, 10, 100, 3750 ] ; [ 2, 6, 10, 100, 3750 ] -> 6 + 100 = 106 -> [ 2, 10, 106, 3750 ] ; [ 2, 10, 106, 3750 ] -> 3750 / 10 = 375 -> [ 2, 106, 375 ] ; [ 2, 106, 375 ] -> 375 - 106 = 269 -> [ 2, 269 ] ; [ 2, 269 ] -> 2 + 269 = 271 -> [ 271 ] ; ANSWER
+Generated Sol: [ 2, 6, 10, 50, 75, 100 ] -> 50 + 100 = 1501550 -> [ 2, 6, 10, 75, 1550 ] ; [ 2, 6, 10, 75, 1550 ] -> 1550 / 75 = 23 -> [ 2, 2, 10, 75 ] ; [ 2, 2, 10, 75 ] -> 10 - 2 = 8 -> [ 2, 8, 75 ] ; [ 2, 8, 75 ] -> 8 * 2 = 16 -> [ 16, 75 ] ; [ 16, 75 ] -> 16 + 75 = 81 -> [ 81 ] ; ANSWER
+
+--- Example #4 ---
+Problem:      IN: [ 2, 100, 4, 5, 9, 10 ] TGT: 123
+True Sol:     [ 2, 4, 5, 9, 10, 100 ] -> 4 + 10 = 14 -> [ 2, 5, 9, 14, 100 ] ; [ 2, 5, 9, 14, 100 ] -> 100 - 2 = 98 -> [ 5, 9, 14, 98 ] ; [ 5, 9, 14, 98 ] -> 14 - 9 = 5 -> [ 5, 5, 98 ] ; [ 5, 5, 98 ] -> 5 * 5 = 25 -> [ 25, 98 ] ; [ 25, 98 ] -> 25 + 98 = 123 -> [ 123 ] ; ANSWER
+Generated Sol: [ 2, 4, 5, 9, 10, 100 ] -> 2 + 10 = 12124 -> [ 4, 5, 9, 10, 124 ] ; [ 4, 5, 9, 10, 124 ] -> 4 + 10 = 14 -> [ 5, 9, 14, 124 ] ; [ 5, 9, 14, 124 ] -> 9 - 5 = 4 -> [ 4, 14, 124 ] ; [ 4, 14, 124 ] -> 4 * 14 = 56 -> [ 56, 124 ] ; [ 56, 124 ] -> 56 + 124 = 123 -> [ 123 ] ; ANSWER
+
+--- Example #5 ---
+Problem:      IN: [ 7, 3, 5, 25, 100, 50 ] TGT: 392
+True Sol:     [ 3, 5, 7, 25, 50, 100 ] -> 5 + 7 = 12 -> [ 3, 12, 25, 50, 100 ] ; [ 3, 12, 25, 50, 100 ] -> 50 / 25 = 2 -> [ 2, 3, 12, 100 ] ; [ 2, 3, 12, 100 ] -> 100 - 2 = 98 -> [ 3, 12, 98 ] ; [ 3, 12, 98 ] -> 12 * 98 = 1176 -> [ 3, 1176 ] ; [ 3, 1176 ] -> 1176 / 3 = 392 -> [ 392 ] ; ANSWER
+Generated Sol: [ 3, 5, 7, 25, 50, 100 ] -> 5 + 7 = 1274 -> [ 3, 7, 25, 50, 100 ] ; [ 3, 7, 25, 50, 100 ] -> 3 + 100 = 103 -> [ 7, 25, 103, 50 ] ; [ 7, 25, 103, 50 ] -> 103 - 7 = 96 -> [ 25, 96, 50 ] ; [ 25, 96, 50 ] -> 96 * 50 = 4900 -> [ 25, 4900 ] ; [ 25, 4900 ] -> 4900 / 25 = 192 -> [ 192 ] ; ANSWER
+
+Total runtime: 77.03 minutes (4621.8 seconds)

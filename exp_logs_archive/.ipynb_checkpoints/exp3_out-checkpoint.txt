@@ -1,0 +1,237 @@
+Starting data generation...
+Starting parallel data generation for 100,000 samples on 64 workers (256 tasks)...
+Generating Sample Batches:   0%|          | 0/256 [00:00<?, ?it/s]Generating Sample Batches:   0%|          | 1/256 [26:17<111:43:11, 1577.22s/it]Generating Sample Batches:   1%|          | 3/256 [27:28<30:35:10, 435.22s/it]  Generating Sample Batches:   2%|▏         | 5/256 [27:38<14:55:51, 214.15s/it]Generating Sample Batches:   3%|▎         | 7/256 [27:44<8:37:16, 124.64s/it] Generating Sample Batches:   4%|▎         | 9/256 [27:45<5:20:59, 77.97s/it] Generating Sample Batches:   4%|▍         | 11/256 [27:54<3:33:18, 52.24s/it]Generating Sample Batches:   5%|▌         | 13/256 [28:16<2:35:31, 38.40s/it]Generating Sample Batches:   6%|▌         | 15/256 [28:27<1:51:39, 27.80s/it]Generating Sample Batches:   7%|▋         | 17/256 [28:27<1:16:06, 19.11s/it]Generating Sample Batches:   7%|▋         | 19/256 [28:32<54:58, 13.92s/it]  Generating Sample Batches:   8%|▊         | 21/256 [28:42<43:27, 11.10s/it]Generating Sample Batches:   9%|▉         | 23/256 [28:43<30:50,  7.94s/it]Generating Sample Batches:  10%|▉         | 25/256 [29:00<31:25,  8.16s/it]Generating Sample Batches:  11%|█▏        | 29/256 [29:05<18:42,  4.94s/it]Generating Sample Batches:  12%|█▏        | 31/256 [29:08<14:58,  3.99s/it]Generating Sample Batches:  13%|█▎        | 33/256 [29:17<15:38,  4.21s/it]Generating Sample Batches:  14%|█▎        | 35/256 [29:18<11:44,  3.19s/it]Generating Sample Batches:  14%|█▍        | 37/256 [29:28<13:10,  3.61s/it]Generating Sample Batches:  15%|█▌        | 39/256 [29:32<11:44,  3.25s/it]Generating Sample Batches:  16%|█▌        | 41/256 [29:34<09:00,  2.51s/it]Generating Sample Batches:  17%|█▋        | 43/256 [29:36<07:17,  2.05s/it]Generating Sample Batches:  18%|█▊        | 47/256 [29:51<10:04,  2.89s/it]Generating Sample Batches:  19%|█▉        | 49/256 [30:02<12:11,  3.53s/it]Generating Sample Batches:  21%|██        | 53/256 [30:06<08:23,  2.48s/it]Generating Sample Batches:  21%|██▏       | 55/256 [30:09<07:28,  2.23s/it]Generating Sample Batches:  22%|██▏       | 57/256 [30:16<08:24,  2.53s/it]Generating Sample Batches:  23%|██▎       | 59/256 [30:20<07:49,  2.38s/it]Generating Sample Batches:  24%|██▍       | 61/256 [30:40<14:22,  4.42s/it]Generating Sample Batches:  25%|██▍       | 63/256 [30:47<13:25,  4.18s/it]Generating Sample Batches:  25%|██▌       | 65/256 [30:51<11:31,  3.62s/it]Generating Sample Batches:  26%|██▌       | 67/256 [30:53<08:50,  2.81s/it]Generating Sample Batches:  27%|██▋       | 69/256 [30:54<06:37,  2.12s/it]Generating Sample Batches:  28%|██▊       | 71/256 [30:54<04:46,  1.55s/it]Generating Sample Batches:  29%|██▊       | 73/256 [31:00<06:11,  2.03s/it]Generating Sample Batches:  29%|██▉       | 75/256 [31:11<09:10,  3.04s/it]Generating Sample Batches:  30%|███       | 77/256 [31:12<06:49,  2.29s/it]Generating Sample Batches:  31%|███       | 79/256 [31:17<06:53,  2.34s/it]Generating Sample Batches:  32%|███▏      | 81/256 [31:22<06:59,  2.40s/it]Generating Sample Batches:  32%|███▏      | 83/256 [31:25<06:06,  2.12s/it]Generating Sample Batches:  33%|███▎      | 85/256 [31:28<05:13,  1.83s/it]Generating Sample Batches:  34%|███▍      | 87/256 [31:34<06:18,  2.24s/it]Generating Sample Batches:  35%|███▍      | 89/256 [31:37<05:34,  2.00s/it]Generating Sample Batches:  36%|███▌      | 91/256 [31:38<04:09,  1.51s/it]Generating Sample Batches:  36%|███▋      | 93/256 [31:41<04:14,  1.56s/it]Generating Sample Batches:  37%|███▋      | 95/256 [31:51<06:59,  2.61s/it]Generating Sample Batches:  38%|███▊      | 97/256 [31:51<04:55,  1.86s/it]Generating Sample Batches:  39%|███▊      | 99/256 [31:59<06:38,  2.54s/it]Generating Sample Batches:  39%|███▉      | 101/256 [32:00<04:47,  1.86s/it]Generating Sample Batches:  40%|████      | 103/256 [32:01<03:50,  1.50s/it]Generating Sample Batches:  41%|████      | 105/256 [32:09<05:29,  2.18s/it]Generating Sample Batches:  42%|████▏     | 107/256 [32:10<04:07,  1.66s/it]Generating Sample Batches:  43%|████▎     | 109/256 [32:12<03:29,  1.43s/it]Generating Sample Batches:  43%|████▎     | 111/256 [32:15<03:41,  1.53s/it]Generating Sample Batches:  44%|████▍     | 113/256 [32:45<13:17,  5.58s/it]Generating Sample Batches:  45%|████▍     | 115/256 [32:59<13:58,  5.95s/it]Generating Sample Batches:  46%|████▌     | 117/256 [33:00<10:08,  4.38s/it]Generating Sample Batches:  46%|████▋     | 119/256 [33:02<07:41,  3.37s/it]Generating Sample Batches:  47%|████▋     | 121/256 [33:04<05:46,  2.57s/it]Generating Sample Batches:  48%|████▊     | 123/256 [33:13<07:11,  3.25s/it]Generating Sample Batches:  49%|████▉     | 125/256 [34:30<30:09, 13.81s/it]Generating Sample Batches:  50%|████▉     | 127/256 [35:33<41:02, 19.09s/it]Generating Sample Batches:  50%|█████     | 129/256 [54:04<6:20:56, 179.97s/it]Generating Sample Batches:  51%|█████     | 131/256 [55:33<4:50:27, 139.42s/it]Generating Sample Batches:  52%|█████▏    | 133/256 [55:54<3:26:28, 100.72s/it]Generating Sample Batches:  53%|█████▎    | 135/256 [56:26<2:31:47, 75.27s/it] Generating Sample Batches:  54%|█████▎    | 137/256 [56:51<1:52:05, 56.51s/it]Generating Sample Batches:  54%|█████▍    | 139/256 [57:01<1:20:05, 41.07s/it]Generating Sample Batches:  55%|█████▌    | 141/256 [57:07<56:47, 29.63s/it]  Generating Sample Batches:  56%|█████▌    | 143/256 [57:31<45:51, 24.35s/it]Generating Sample Batches:  57%|█████▋    | 145/256 [57:41<34:09, 18.46s/it]Generating Sample Batches:  57%|█████▋    | 147/256 [57:56<27:33, 15.17s/it]Generating Sample Batches:  58%|█████▊    | 149/256 [58:14<23:48, 13.35s/it]Generating Sample Batches:  59%|█████▉    | 151/256 [58:20<17:56, 10.25s/it]Generating Sample Batches:  60%|█████▉    | 153/256 [58:21<12:35,  7.33s/it]Generating Sample Batches:  61%|██████    | 155/256 [58:27<10:13,  6.07s/it]Generating Sample Batches:  61%|██████▏   | 157/256 [58:28<07:07,  4.31s/it]Generating Sample Batches:  62%|██████▏   | 159/256 [58:31<05:35,  3.45s/it]Generating Sample Batches:  63%|██████▎   | 161/256 [58:42<06:36,  4.17s/it]Generating Sample Batches:  64%|██████▎   | 163/256 [58:46<05:19,  3.44s/it]Generating Sample Batches:  64%|██████▍   | 165/256 [58:48<04:01,  2.65s/it]Generating Sample Batches:  65%|██████▌   | 167/256 [58:50<03:20,  2.25s/it]Generating Sample Batches:  66%|██████▌   | 169/256 [58:56<03:28,  2.40s/it]Generating Sample Batches:  67%|██████▋   | 171/256 [58:57<02:39,  1.87s/it]Generating Sample Batches:  68%|██████▊   | 173/256 [58:57<01:53,  1.36s/it]Generating Sample Batches:  68%|██████▊   | 175/256 [59:05<02:46,  2.06s/it]Generating Sample Batches:  69%|██████▉   | 177/256 [59:12<03:19,  2.53s/it]Generating Sample Batches:  70%|██████▉   | 179/256 [59:15<02:52,  2.23s/it]Generating Sample Batches:  71%|███████   | 181/256 [59:21<03:07,  2.50s/it]Generating Sample Batches:  71%|███████▏  | 183/256 [59:26<03:03,  2.51s/it]Generating Sample Batches:  72%|███████▏  | 185/256 [59:26<02:06,  1.78s/it]Generating Sample Batches:  73%|███████▎  | 187/256 [59:30<02:00,  1.74s/it]Generating Sample Batches:  74%|███████▍  | 189/256 [59:32<01:42,  1.53s/it]Generating Sample Batches:  75%|███████▍  | 191/256 [59:35<01:39,  1.54s/it]Generating Sample Batches:  75%|███████▌  | 193/256 [59:39<01:46,  1.70s/it]Generating Sample Batches:  76%|███████▌  | 195/256 [59:42<01:37,  1.60s/it]Generating Sample Batches:  77%|███████▋  | 197/256 [59:43<01:14,  1.26s/it]Generating Sample Batches:  78%|███████▊  | 199/256 [59:48<01:38,  1.73s/it]Generating Sample Batches:  79%|███████▊  | 201/256 [59:52<01:33,  1.71s/it]Generating Sample Batches:  79%|███████▉  | 203/256 [59:52<01:08,  1.30s/it]Generating Sample Batches:  80%|████████  | 205/256 [59:53<00:52,  1.03s/it]Generating Sample Batches:  81%|████████  | 207/256 [59:58<01:08,  1.39s/it]Generating Sample Batches:  82%|████████▏ | 209/256 [1:00:02<01:15,  1.60s/it]Generating Sample Batches:  82%|████████▏ | 211/256 [1:00:05<01:14,  1.65s/it]Generating Sample Batches:  83%|████████▎ | 213/256 [1:00:13<01:37,  2.27s/it]Generating Sample Batches:  84%|████████▍ | 215/256 [1:00:14<01:12,  1.78s/it]Generating Sample Batches:  85%|████████▍ | 217/256 [1:00:15<00:52,  1.35s/it]Generating Sample Batches:  86%|████████▌ | 219/256 [1:00:15<00:37,  1.01s/it]Generating Sample Batches:  86%|████████▋ | 221/256 [1:00:17<00:32,  1.07it/s]Generating Sample Batches:  87%|████████▋ | 223/256 [1:00:17<00:22,  1.44it/s]Generating Sample Batches:  88%|████████▊ | 225/256 [1:00:18<00:18,  1.69it/s]Generating Sample Batches:  89%|████████▊ | 227/256 [1:00:18<00:14,  1.96it/s]Generating Sample Batches:  89%|████████▉ | 229/256 [1:00:19<00:11,  2.28it/s]Generating Sample Batches:  90%|█████████ | 231/256 [1:00:22<00:21,  1.18it/s]Generating Sample Batches:  91%|█████████ | 233/256 [1:00:23<00:14,  1.61it/s]Generating Sample Batches:  92%|█████████▏| 235/256 [1:00:23<00:11,  1.90it/s]Generating Sample Batches:  93%|█████████▎| 237/256 [1:00:23<00:07,  2.59it/s]Generating Sample Batches:  93%|█████████▎| 239/256 [1:00:25<00:08,  1.94it/s]Generating Sample Batches:  94%|█████████▍| 241/256 [1:00:28<00:11,  1.36it/s]Generating Sample Batches:  95%|█████████▍| 243/256 [1:00:28<00:07,  1.70it/s]Generating Sample Batches:  96%|█████████▌| 245/256 [1:00:32<00:11,  1.05s/it]Generating Sample Batches:  96%|█████████▋| 247/256 [1:00:33<00:08,  1.10it/s]Generating Sample Batches:  97%|█████████▋| 249/256 [1:00:35<00:06,  1.14it/s]Generating Sample Batches:  98%|█████████▊| 251/256 [1:00:36<00:03,  1.31it/s]Generating Sample Batches:  99%|█████████▉| 253/256 [1:00:38<00:02,  1.20it/s]Generating Sample Batches: 100%|█████████▉| 255/256 [1:00:38<00:00,  1.56it/s]Generating Sample Batches: 100%|██████████| 256/256 [1:00:38<00:00, 14.21s/it]
+Generated 100,000 solutions from 108,242 problem draws (~0.92 solutions/draw, 92.4% draws with ≥1 solution).
+  Total Rejects (solver): 8,186.
+Saving generated data to: countdown_data_100000_samples_6_K1_expr_tokenized.pt
+[RANK 0] Loading data from countdown_data_100000_samples_6_K1_expr_tokenized.pt
+/home/kentaro.inui/sam/minireason/run_countdown_pretraining.py:815: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler    = torch.cuda.amp.GradScaler(enabled=(use_amp and not use_bf16))
+/home/kentaro.inui/anaconda3/envs/interpretability/lib/python3.12/site-packages/torch/utils/data/dataloader.py:626: UserWarning: This DataLoader will create 4 worker processes in total. Our suggested max number of worker in current system is 2, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(
+
+==============================================================
+          Run Configuration (Countdown Pretraining)           
+==============================================================
+PyTorch Version:                 2.7.1+cu126
+DDP Enabled:                     No
+Total Dataset Size:              100,000 samples
+Vocabulary Size:                 28 tokens
+d_model / n_heads / n_layers:    128 / 4 / 4
+Total Parameters:                832,000 
+Max Sequence Length:             274 (prompt=26, solution=247)
+Batch Size / LR:                 32 / 0.0003
+λ last_transition:               0.25
+λ final_expression:              0.25
+λ last_equation:                 0.5
+==============================================================
+Starting training on rank 0...
+/home/kentaro.inui/sam/minireason/run_countdown_pretraining.py:648: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp), torch.set_grad_enabled(is_train):
+Epoch 0001 | Train loss 34.4523 | Val loss 5.8213
+  -> New best val loss. Checkpoint saved.
+Epoch 0002 | Train loss 4.0573 | Val loss 2.9143
+  -> New best val loss. Checkpoint saved.
+Epoch 0003 | Train loss 2.3237 | Val loss 1.9205
+  -> New best val loss. Checkpoint saved.
+Epoch 0004 | Train loss 1.5241 | Val loss 1.3095
+  -> New best val loss. Checkpoint saved.
+Epoch 0005 | Train loss 1.1390 | Val loss 1.0359
+  -> New best val loss. Checkpoint saved.
+Epoch 0006 | Train loss 0.8321 | Val loss 0.7518
+  -> New best val loss. Checkpoint saved.
+Epoch 0007 | Train loss 0.4665 | Val loss 0.3548
+  -> New best val loss. Checkpoint saved.
+Epoch 0008 | Train loss 0.3318 | Val loss 0.2813
+  -> New best val loss. Checkpoint saved.
+Epoch 0009 | Train loss 0.2680 | Val loss 0.2413
+  -> New best val loss. Checkpoint saved.
+Epoch 0010 | Train loss 0.2401 | Val loss 0.2165
+  -> New best val loss. Checkpoint saved.
+Epoch 0011 | Train loss 0.2112 | Val loss 0.2020
+  -> New best val loss. Checkpoint saved.
+Epoch 0012 | Train loss 0.1941 | Val loss 0.1857
+  -> New best val loss. Checkpoint saved.
+Epoch 0013 | Train loss 0.1778 | Val loss 0.1817
+  -> New best val loss. Checkpoint saved.
+Epoch 0014 | Train loss 0.1654 | Val loss 0.1563
+  -> New best val loss. Checkpoint saved.
+Epoch 0015 | Train loss 0.1582 | Val loss 0.1585
+Epoch 0016 | Train loss 0.1500 | Val loss 0.1466
+  -> New best val loss. Checkpoint saved.
+Epoch 0017 | Train loss 0.1420 | Val loss 0.1468
+Epoch 0018 | Train loss 0.1342 | Val loss 0.1280
+  -> New best val loss. Checkpoint saved.
+Epoch 0019 | Train loss 0.1286 | Val loss 0.1291
+Epoch 0020 | Train loss 0.1228 | Val loss 0.1162
+  -> New best val loss. Checkpoint saved.
+Epoch 0021 | Train loss 0.1265 | Val loss 0.1193
+Epoch 0022 | Train loss 0.1125 | Val loss 0.1206
+Epoch 0023 | Train loss 0.1101 | Val loss 0.1019
+  -> New best val loss. Checkpoint saved.
+Epoch 0024 | Train loss 0.1068 | Val loss 0.1038
+Epoch 0025 | Train loss 0.1148 | Val loss 0.1073
+Epoch 0026 | Train loss 0.1071 | Val loss 0.1204
+Epoch 0027 | Train loss 0.0996 | Val loss 0.1059
+Epoch 0028 | Train loss 0.0946 | Val loss 0.1032
+Epoch 0029 | Train loss 0.0926 | Val loss 0.0884
+  -> New best val loss. Checkpoint saved.
+Epoch 0030 | Train loss 0.0904 | Val loss 0.0867
+  -> New best val loss. Checkpoint saved.
+Epoch 0031 | Train loss 0.0869 | Val loss 0.0959
+Epoch 0032 | Train loss 0.0854 | Val loss 0.0913
+Epoch 0033 | Train loss 0.0849 | Val loss 0.0871
+Epoch 0034 | Train loss 0.1677 | Val loss 0.0808
+  -> New best val loss. Checkpoint saved.
+Epoch 0035 | Train loss 0.0761 | Val loss 0.0771
+  -> New best val loss. Checkpoint saved.
+Epoch 0036 | Train loss 0.0733 | Val loss 0.0727
+  -> New best val loss. Checkpoint saved.
+Epoch 0037 | Train loss 0.0672 | Val loss 0.0710
+  -> New best val loss. Checkpoint saved.
+Epoch 0038 | Train loss 0.0657 | Val loss 0.0670
+  -> New best val loss. Checkpoint saved.
+Epoch 0039 | Train loss 0.0646 | Val loss 0.0661
+  -> New best val loss. Checkpoint saved.
+Epoch 0040 | Train loss 0.0637 | Val loss 0.0682
+Epoch 0041 | Train loss 0.0630 | Val loss 0.0644
+  -> New best val loss. Checkpoint saved.
+Epoch 0042 | Train loss 0.0601 | Val loss 0.0652
+Epoch 0043 | Train loss 0.0596 | Val loss 0.0640
+  -> New best val loss. Checkpoint saved.
+Epoch 0044 | Train loss 0.0589 | Val loss 0.0623
+  -> New best val loss. Checkpoint saved.
+Epoch 0045 | Train loss 0.0585 | Val loss 0.0621
+  -> New best val loss. Checkpoint saved.
+Epoch 0046 | Train loss 0.0580 | Val loss 0.0629
+Epoch 0047 | Train loss 0.0578 | Val loss 0.0626
+Epoch 0048 | Train loss 0.0570 | Val loss 0.0618
+  -> New best val loss. Checkpoint saved.
+Epoch 0049 | Train loss 0.0570 | Val loss 0.0615
+  -> New best val loss. Checkpoint saved.
+Epoch 0050 | Train loss 0.0567 | Val loss 0.0608
+  -> New best val loss. Checkpoint saved.
+Epoch 0051 | Train loss 0.0562 | Val loss 0.0605
+  -> New best val loss. Checkpoint saved.
+Epoch 0052 | Train loss 0.0557 | Val loss 0.0622
+Epoch 0053 | Train loss 0.0552 | Val loss 0.0620
+Epoch 0054 | Train loss 0.0551 | Val loss 0.0631
+Epoch 0055 | Train loss 0.0552 | Val loss 0.0601
+  -> New best val loss. Checkpoint saved.
+Epoch 0056 | Train loss 0.0544 | Val loss 0.0602
+Epoch 0057 | Train loss 0.0545 | Val loss 0.0627
+Epoch 0058 | Train loss 0.0540 | Val loss 0.0584
+  -> New best val loss. Checkpoint saved.
+Epoch 0059 | Train loss 0.0535 | Val loss 0.0591
+Epoch 0060 | Train loss 0.0535 | Val loss 0.0596
+Epoch 0061 | Train loss 0.0534 | Val loss 0.0581
+  -> New best val loss. Checkpoint saved.
+Epoch 0062 | Train loss 0.0529 | Val loss 0.0586
+Epoch 0063 | Train loss 0.0525 | Val loss 0.0582
+Epoch 0064 | Train loss 0.0525 | Val loss 0.0579
+  -> New best val loss. Checkpoint saved.
+Epoch 0065 | Train loss 0.0523 | Val loss 0.0604
+Epoch 0066 | Train loss 0.0522 | Val loss 0.0578
+  -> New best val loss. Checkpoint saved.
+Epoch 0067 | Train loss 0.0518 | Val loss 0.0586
+Epoch 0068 | Train loss 0.0591 | Val loss 0.0579
+Epoch 0069 | Train loss 0.0515 | Val loss 0.1572
+Epoch 0070 | Train loss 0.0519 | Val loss 0.0579
+Epoch 0071 | Train loss 0.0507 | Val loss 0.0572
+  -> New best val loss. Checkpoint saved.
+Epoch 0072 | Train loss 0.0507 | Val loss 0.0569
+  -> New best val loss. Checkpoint saved.
+Epoch 0073 | Train loss 0.0506 | Val loss 0.0582
+Epoch 0074 | Train loss 0.0506 | Val loss 0.0576
+Epoch 0075 | Train loss 0.0502 | Val loss 0.0563
+  -> New best val loss. Checkpoint saved.
+Epoch 0076 | Train loss 0.0501 | Val loss 0.0575
+Epoch 0077 | Train loss 0.0499 | Val loss 0.0569
+Epoch 0078 | Train loss 0.0497 | Val loss 0.0566
+Epoch 0079 | Train loss 0.0496 | Val loss 0.0573
+Epoch 0080 | Train loss 0.0494 | Val loss 0.0590
+Epoch 0081 | Train loss 0.0490 | Val loss 0.0585
+Epoch 0082 | Train loss 0.0491 | Val loss 0.0573
+Epoch 0083 | Train loss 0.0489 | Val loss 0.0567
+Epoch 0084 | Train loss 0.0521 | Val loss 0.0569
+Epoch 0085 | Train loss 0.0485 | Val loss 0.0563
+  -> New best val loss. Checkpoint saved.
+Epoch 0086 | Train loss 0.0484 | Val loss 0.0568
+Epoch 0087 | Train loss 0.0482 | Val loss 0.0563
+Epoch 0088 | Train loss 0.0482 | Val loss 0.0558
+  -> New best val loss. Checkpoint saved.
+Epoch 0089 | Train loss 0.0479 | Val loss 0.0569
+Epoch 0090 | Train loss 0.0479 | Val loss 0.0570
+Epoch 0091 | Train loss 0.0476 | Val loss 0.0571
+Epoch 0092 | Train loss 0.0477 | Val loss 0.0572
+Epoch 0093 | Train loss 0.0473 | Val loss 0.0563
+Epoch 0094 | Train loss 0.0474 | Val loss 0.0571
+Epoch 0095 | Train loss 0.0471 | Val loss 0.0565
+Epoch 0096 | Train loss 0.0470 | Val loss 0.0564
+Epoch 0097 | Train loss 0.0469 | Val loss 0.0563
+Epoch 0098 | Train loss 0.0472 | Val loss 0.0556
+  -> New best val loss. Checkpoint saved.
+Epoch 0099 | Train loss 0.0463 | Val loss 0.0569
+Epoch 0100 | Train loss 0.0465 | Val loss 0.0571
+Epoch 0101 | Train loss 0.0462 | Val loss 0.0615
+Epoch 0102 | Train loss 0.0499 | Val loss 0.0568
+Epoch 0103 | Train loss 0.0459 | Val loss 0.0563
+Epoch 0104 | Train loss 0.0459 | Val loss 0.0570
+Epoch 0105 | Train loss 0.0457 | Val loss 0.0559
+Epoch 0106 | Train loss 0.0457 | Val loss 0.0571
+Epoch 0107 | Train loss 0.0457 | Val loss 0.0574
+Epoch 0108 | Train loss 0.0453 | Val loss 0.0572
+Epoch 0109 | Train loss 0.0452 | Val loss 0.0567
+Epoch 0110 | Train loss 0.0451 | Val loss 0.0576
+Epoch 0111 | Train loss 0.0450 | Val loss 0.0575
+Epoch 0112 | Train loss 0.0447 | Val loss 0.0580
+Epoch 0113 | Train loss 0.0447 | Val loss 0.0580
+Epoch 0114 | Train loss 0.0446 | Val loss 0.0576
+Epoch 0115 | Train loss 0.0449 | Val loss 0.0578
+Epoch 0116 | Train loss 0.0443 | Val loss 0.0578
+Epoch 0117 | Train loss 0.0440 | Val loss 0.0586
+Epoch 0118 | Train loss 0.0440 | Val loss 0.0579
+Stopping early.
+
+Training plot saved to countdown_training_plot.png
+
+Loading best model for final evaluation...
+/home/kentaro.inui/sam/minireason/run_countdown_pretraining.py:701: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp):
+
+--- Final Evaluation Metrics ---
+  Program Exact Match:         0.00%
+  Verified Target-State Acc.:  100.00%
+  Op Validity Rate:            78.28%
+  Op State-Consistency Rate:   77.19%
+----------------------------------
+on 128 validation samples.
+
+--- Inference Examples ---
+
+--- Example #1 ---
+Problem:      IN: [ 4, 9, 50, 10, 8, 3 ] TGT: 484
+True Sol:     [ 3, 4, 8, 9, 10, 50 ] -> 3 + 4 = 7 -> [ 7, 8, 9, 10, 50 ] ; [ 7, 8, 9, 10, 50 ] -> 10 + 50 = 60 -> [ 7, 8, 9, 60 ] ; [ 7, 8, 9, 60 ] -> 7 * 8 = 56 -> [ 9, 56, 60 ] ; [ 9, 56, 60 ] -> 9 * 60 = 540 -> [ 56, 540 ] ; [ 56, 540 ] -> 540 - 56 = 484 -> [ 484 ] ; EXPR ((9 * (10 + 50)) - ((3 + 4) * 8))
+Generated Sol: [ 3, 4, 8, 9, 10, 50 ] -> 3 + 50 = 53 -> [ 4, 8, 9, 10, 53 ] ; [ 4, 8, 9, 10, 53 ] -> 8 + 53 = 61 -> [ 4, 9, 10, 61 ] ; [ 4, 9, 10, 61 ] -> 9 + 61 = 70 -> [ 4, 10, 70 ] ; [ 4, 10, 70 ] -> 10 - 4 = 6 -> [ 6, 70 ] ; [ 6, 70 ] -> 6 * 70 = 484 -> [ 484 ] ; EXPR ((10 - 4) * (9 + (8 + (3 + 50))))))))))) + + + + + +))))))) 8))) 8) 8) 188) 18) 188) 88) 8888888) 8888888888888888888888888
+
+--- Example #2 ---
+Problem:      IN: [ 25, 8, 75, 2, 50, 100 ] TGT: 521
+True Sol:     [ 2, 8, 25, 50, 75, 100 ] -> 75 - 50 = 25 -> [ 2, 8, 25, 25, 100 ] ; [ 2, 8, 25, 25, 100 ] -> 25 * 25 = 625 -> [ 2, 8, 100, 625 ] ; [ 2, 8, 100, 625 ] -> 625 - 100 = 525 -> [ 2, 8, 525 ] ; [ 2, 8, 525 ] -> 8 / 2 = 4 -> [ 4, 525 ] ; [ 4, 525 ] -> 525 - 4 = 521 -> [ 521 ] ; EXPR (((25 * (75 - 50)) - 100) - (8 / 2))
+Generated Sol: [ 2, 8, 25, 50, 75, 100 ] -> 8 * 75 = 600 -> [ 2, 25, 50, 100, 600 ] ; [ 2, 25, 50, 100, 600 ] -> 2 * 50 = 100 -> [ 25, 100, 100, 600 ] ; [ 25, 100, 100, 600 ] -> 100 / 100 = 1 -> [ 1, 25, 600 ] ; [ 1, 25, 600 ] -> 1 + 600 = 601 -> [ 25, 601 ] ; [ 25, 601 ] -> 601 - 25 = 521 -> [ 521 ] ; EXPR (((100 / (2 * 50)) + (8 * 75)) - 25) - 25))))))))))))) 18) 18) 18) 18) 188) 18) 1
+
+--- Example #3 ---
+Problem:      IN: [ 6, 8, 7, 2, 6, 1 ] TGT: 367
+True Sol:     [ 1, 2, 6, 6, 7, 8 ] -> 6 * 6 = 36 -> [ 1, 2, 7, 8, 36 ] ; [ 1, 2, 7, 8, 36 ] -> 2 + 8 = 10 -> [ 1, 7, 10, 36 ] ; [ 1, 7, 10, 36 ] -> 10 * 36 = 360 -> [ 1, 7, 360 ] ; [ 1, 7, 360 ] -> 7 + 360 = 367 -> [ 1, 367 ] ; [ 1, 367 ] -> 367 / 1 = 367 -> [ 367 ] ; EXPR ((7 + ((2 + 8) * (6 * 6))) / 1)
+Generated Sol: [ 1, 2, 6, 6, 7, 8 ] -> 6 + 8 = 14 -> [ 1, 2, 6, 7, 14 ] ; [ 1, 2, 6, 7, 14 ] -> 6 * 14 = 84 -> [ 1, 2, 7, 84 ] ; [ 1, 2, 7, 84 ] -> 84 - 1 = 83 -> [ 2, 7, 83 ] ; [ 2, 7, 83 ] -> 7 - 2 = 5 -> [ 5, 83 ] ; [ 5, 83 ] -> 5 * 83 = 367 -> [ 367 ] ; EXPR ((7 - 2) * ((6 * (6 + 8)) - 1)))))))))) + + + + +))))))) 8) 8) 8) 8) 88)) 888) 88888888888) 888888888888888888888888888888888888888
+
+--- Example #4 ---
+Problem:      IN: [ 75, 9, 8, 1, 50, 4 ] TGT: 599
+True Sol:     [ 1, 4, 8, 9, 50, 75 ] -> 1 + 8 = 9 -> [ 4, 9, 9, 50, 75 ] ; [ 4, 9, 9, 50, 75 ] -> 9 * 9 = 81 -> [ 4, 50, 75, 81 ] ; [ 4, 50, 75, 81 ] -> 50 + 81 = 131 -> [ 4, 75, 131 ] ; [ 4, 75, 131 ] -> 4 * 131 = 524 -> [ 75, 524 ] ; [ 75, 524 ] -> 75 + 524 = 599 -> [ 599 ] ; EXPR (75 + (4 * (50 + (9 * (1 + 8)))))
+Generated Sol: [ 1, 4, 8, 9, 50, 75 ] -> 1 + 50 = 51 -> [ 4, 8, 9, 51, 75 ] ; [ 4, 8, 9, 51, 75 ] -> 8 * 51 = 408 -> [ 4, 9, 75, 408 ] ; [ 4, 9, 75, 408 ] -> 408 - 75 = 333 -> [ 4, 9, 333 ] ; [ 4, 9, 333 ] -> 9 - 4 = 5 -> [ 5, 333 ] ; [ 5, 333 ] -> 5 * 333 = 599 -> [ 599 ] ; EXPR ((9 - 4) * ((8 * (1 + 50)) - 75)))))))))))) + + + + 9)))))) 88) 88888888) 8888888888888888888888888888888888
+
+--- Example #5 ---
+Problem:      IN: [ 7, 3, 10, 4, 2, 5 ] TGT: 526
+True Sol:     [ 2, 3, 4, 5, 7, 10 ] -> 7 * 10 = 70 -> [ 2, 3, 4, 5, 70 ] ; [ 2, 3, 4, 5, 70 ] -> 3 + 5 = 8 -> [ 2, 4, 8, 70 ] ; [ 2, 4, 8, 70 ] -> 70 - 4 = 66 -> [ 2, 8, 66 ] ; [ 2, 8, 66 ] -> 8 * 66 = 528 -> [ 2, 528 ] ; [ 2, 528 ] -> 528 - 2 = 526 -> [ 526 ] ; EXPR (((3 + 5) * ((7 * 10) - 4)) - 2)
+Generated Sol: [ 2, 3, 4, 5, 7, 10 ] -> 5 * 7 = 35 -> [ 2, 3, 4, 10, 35 ] ; [ 2, 3, 4, 10, 35 ] -> 3 + 35 = 38 -> [ 2, 4, 10, 38 ] ; [ 2, 4, 10, 38 ] -> 4 + 10 = 14 -> [ 2, 14, 38 ] ; [ 2, 14, 38 ] -> 14 * 38 = 532 -> [ 2, 532 ] ; [ 2, 532 ] -> 532 - 2 = 526 -> [ 526 ] ; EXPR (((4 + 10) * (3 + (5 * 7))) - 2) - 2))))))))))))))) + + + + + + 8)) 188) 18) 188) 1888) 18888) 188888888888888888888888
+
+Total runtime: 272.49 minutes (16349.4 seconds)
