@@ -75,6 +75,7 @@ HPARAMS = {
     "lambda_transition_ce": 0.25, # CE only on the final post-state bracket span
     "lambda_final_expr": 0.25,    # CE on tokens after EXPR
     "lambda_last_equation": 0.5,  # last equation loss (a op b = c)
+    "lambda_eos_margin": 0.5,     # weight for EOS margin auxiliary
     "use_gradient_checkpointing": False,
     "seed": 42,
     # --- Stochastic decision, deterministic execution (inference) ---
@@ -481,42 +482,19 @@ def _last_step_spans(token_ids: torch.Tensor, tok) -> Optional[Tuple[int, int, i
         return None
     return eq_idx, l, r
 
-def _all_eq_positions(ids, tok: Tokenizer, end_limit: Optional[int] = None):
-    """Indices of every '=' token before EXPR (or up to end_limit)."""
-    eq_id = tok.tok2id['=']
-    if end_limit is None:
-        try:
-            end_limit = ids.index(tok.tok2id['EXPR'])
-        except ValueError:
-            end_limit = len(ids)
-    return [i for i, t in enumerate(ids[:end_limit]) if t == eq_id]
-
-def _all_equations_ok(text: str) -> List[float]:
-    """Parse all 'a op b = c' before EXPR; return 1.0/0.0 per equation."""
-    text = text.split("EXPR", 1)[0]
-    eqs = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*([0-9]+)", text)
-    outs = []
-    for a_s, op, b_s, c_s in eqs:
-        a, b, c = int(a_s), int(b_s), int(c_s)
-        if op == '+': ok = (a + b == c)
-        elif op == '-': ok = (a > b and a - b == c)
-        elif op == '*': ok = (a > 1 and b > 1 and a * b == c)
-        else: ok = (b >= 1 and a % b == 0 and a // b == c)
-        outs.append(1.0 if ok else 0.0)
-    return outs
-
-
+ 
 def compute_masked_loss(model, hidden_states, targets, tok):
     h_for_pred = hidden_states[:, :-1, :].contiguous()
     t_for_pred = targets[:, 1:].contiguous()
     B, Tm1, D = h_for_pred.shape
     idx = torch.arange(Tm1, device=targets.device).unsqueeze(0)
+    RP = tok.tok2id[')']  # right-paren token id (used in multiple scopes)
 
     with torch.no_grad():
         sep_pos = (targets == tok.sep_id).int().argmax(dim=1)
         eos_pos = (targets == tok.eos_id).int().argmax(dim=1)
-        # Base CE mask on (SEP, EOS)
-        base_ce_mask = (idx + 1 > sep_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
+        # Base CE mask on (SEP, EOS)  — include first token after SEP
+        base_ce_mask = (idx >= sep_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
                        & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
         ce_mask = base_ce_mask.clone()
 
@@ -542,8 +520,7 @@ def compute_masked_loss(model, hidden_states, targets, tok):
                     j += 1
 
         # ===== B) Stop CE on trailing EXPR tokens and upweight EOS right after final ')' =====
-        RP = tok.tok2id[')']
-        ce_weights = torch.ones_like(ce_mask, dtype=hidden_states.dtype)
+        ce_weights = torch.ones_like(ce_mask, dtype=h_for_pred.dtype, device=h_for_pred.device)
         for b in range(B):
             ids_b = targets[b].tolist()
             try:
@@ -580,7 +557,7 @@ def compute_masked_loss(model, hidden_states, targets, tok):
                 last_transition_mask[b, l:r-1] = True
 
         # Base CE excludes the last transition span to avoid double counting
-        ce_mask = base_ce_mask & (~last_transition_mask)
+        ce_mask = ce_mask & (~last_transition_mask)
 
     selected_h = h_for_pred[ce_mask]; selected_t = t_for_pred[ce_mask]; selected_w = ce_weights[ce_mask]
     # debug: supervised token count
@@ -603,7 +580,7 @@ def compute_masked_loss(model, hidden_states, targets, tok):
     else:
         last_transition_loss = F.cross_entropy(model.head(post_h), post_t)
 
-    # ===== Final-expression loss (only tokens after EXPR until EOS) =====
+    # ===== Final-expression loss (only tokens after EXPR, capped at final ')') =====
     with torch.no_grad():
         Tm1 = t_for_pred.size(1)
         idx = torch.arange(Tm1, device=targets.device).unsqueeze(0)
@@ -611,7 +588,18 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         expr_pos = (targets == tok.tok2id['EXPR']).int().argmax(dim=1)
         expr_pos = torch.where(has_expr, expr_pos, torch.full_like(expr_pos, Tm1))  # if missing, mask empty
         eos_pos  = (targets == tok.eos_id).int().argmax(dim=1)
-        expr_mask = (idx >= expr_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
+        # cap supervision at the last ')' before EOS (RP defined above)
+        last_r = torch.full_like(eos_pos, fill_value=Tm1 - 1)
+        for b in range(B):
+            ids_b = targets[b].tolist()
+            try:
+                e = ids_b.index(tok.eos_id)
+            except ValueError:
+                continue
+            rpars = [i for i, t in enumerate(ids_b[:e]) if t == RP]
+            if rpars:
+                last_r[b] = rpars[-1]
+        expr_mask = (idx >= expr_pos.unsqueeze(1)) & (idx <= last_r.unsqueeze(1)) \
                     & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
     sum_h = h_for_pred[expr_mask]
     sum_t = t_for_pred[expr_mask]
@@ -700,7 +688,7 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         + HPARAMS.get("lambda_transition_ce", 0.0) * last_transition_loss
         + HPARAMS.get("lambda_final_expr", 0.0) * final_expression_loss
         + HPARAMS.get("lambda_last_equation", 0.0) * last_equation_loss
-        + 1.0 * eos_margin_loss  # tune or drop to 0.0
+        + HPARAMS.get("lambda_eos_margin", 0.0) * eos_margin_loss
 
     )
     return total_loss, ce_correct, ce_tokens
@@ -742,7 +730,7 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
     x = torch.tensor([prompt_ids], device=device)
     gen = []
     stop_ids = {tokenizer.eos_id, tokenizer.pad_id}
-    id2tok, tok2id = tokenizer.id2tok, tokenizer.tok2id
+    id2tok = tokenizer.id2tok
     stochastic_steps = int(HPARAMS.get("stochastic_steps", 0))
     temp_ops, top_p_ops, top_k_ops = float(HPARAMS.get("temperature_ops", 0.7)), float(HPARAMS.get("top_p_ops", 1.0)), int(HPARAMS.get("top_k_ops", 0))
 
@@ -832,11 +820,13 @@ def main():
         random.seed(HPARAMS['seed']); torch.manual_seed(HPARAMS['seed'])
         if torch.cuda.is_available(): torch.cuda.manual_seed_all(HPARAMS['seed'])
         torch.backends.cudnn.deterministic = True; torch.backends.cudnn.benchmark = False
-        torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
         
         config = HPARAMS.copy()
-        
-        cache_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_K{config.get('max_solutions',1)}_expr_tokenized.pt"
+        archive_dir = "exp_logs_archive"
+        if global_rank == 0:
+            os.makedirs(archive_dir, exist_ok=True) 
+        base_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_K{config.get('max_solutions',1)}_expr_tokenized.pt"
+        cache_filename = os.path.join(archive_dir, base_filename)
         if global_rank == 0 and (not config['use_cached_data'] or not os.path.exists(cache_filename)):
             logging.info("Starting data generation...")
             ins, outs = generate_countdown_data(config)
@@ -920,6 +910,7 @@ def main():
 {f'λ last_transition:':<32} {config.get('lambda_transition_ce', 0.0)}
 {f'λ final_expression:':<32} {config.get('lambda_final_expr', 0.0)}
 {f'λ last_equation:':<32} {config.get('lambda_last_equation', 0.0)}
+{f'λ eos_margin:':<32} {config.get('lambda_eos_margin', 0.0)}
 {'='*width}"""
             logging.info(log_msg)
 
