@@ -14,8 +14,9 @@ The process involves several key stages:
 4.  **Training:** The model is trained to predict the next token in a solution sequence,
     given the problem and the preceding tokens. It uses a standard training loop with an
     AdamW optimizer, gradient clipping, and an early stopping mechanism. This version
-    uses masked cross-entropy with a small EOS-step upweight, masking only (i) the final
-    result digits after the last '=' and (ii) the final post-state '[ ... ] ;' span.
+    uses masked cross-entropy with a small EOS-step upweight, masking only the final
+    result digits in two places: (i) immediately after the last '=' and (ii) inside
+    the final post-state '[ ... ]'. We still supervise '->', brackets, ';', and EXPR.
 5.  **Evaluation:** After training, the model's performance is evaluated on a held-out
     validation set. Metrics include exact program match, the validity of generated
     arithmetic operations, and the consistency of state transitions.
@@ -469,8 +470,10 @@ class DecoderOnly(nn.Module):
 def compute_masked_loss(model, hidden_states, targets, tok):
     """Simple CE:
        - supervise all tokens from SEP through EOS (inclusive of the EOS prediction step),
-       - BUT mask (i) the final result digits after the last '=' and (ii) the final post-state '[ ... ] ;' span.
-       EXPR remains fully supervised. A small weight is applied on the EOS step."""
+       - BUT mask only the final result digits in two places:
+         (i) the digits immediately after the last '=', and
+         (ii) those digits inside the final post-state '[ ... ]'.
+       We still supervise '->', '[', ']', ';', and EXPR. EOS step is upweighted."""
     h_for_pred = hidden_states[:, :-1, :].contiguous()
     t_for_pred = targets[:, 1:].contiguous()
     B, Tm1, _ = h_for_pred.shape
@@ -490,7 +493,7 @@ def compute_masked_loss(model, hidden_states, targets, tok):
                 if 0 <= t_eos < Tm1:
                     ce_weights[b, t_eos] = eos_w
 
-        # mask ONLY the final result digits after the last '=' and the final post-state bracket span
+        # mask ONLY the final result digits (after last '=' and again inside the final post-state '[ ... ]')
         digit_ids = [tok.tok2id[str(d)] for d in range(10)]
         eq_id, arr_id, lbr, rbr, semi = tok.tok2id['='], tok.tok2id['->'], tok.tok2id['['], tok.tok2id[']'], tok.tok2id[';']
         for b in range(B):
@@ -512,17 +515,18 @@ def compute_masked_loss(model, hidden_states, targets, tok):
                 if 0 <= t_idx < Tm1:
                     ce_mask[b, t_idx] = False
                 j += 1
-            # (ii) mask the final post-state "[ ... ]" span (and trailing ';' if present)
+            # (ii) mask ONLY the digits inside the final post-state "[ ... ]" (not '[', ']', ';', or '->')
             try:
                 arrow2 = ids_b.index(arr_id, eq + 1)
-                l = ids_b.index(lbr, arrow2 + 1)
-                r = ids_b.index(rbr, l + 1) + 1  # exclusive
-                if r < len(ids_b) and ids_b[r] == semi:
-                    r += 1
-                l_t = max(0, l - 1)   # timestep predicting '['
-                r_t = max(0, r - 1)   # exclusive in timestep space
-                for t_idx in range(l_t, min(r_t, Tm1)):
-                    ce_mask[b, t_idx] = False
+                l = ids_b.index(lbr, arrow2 + 1)     # index of '[' after that arrow
+                r = ids_b.index(rbr, l + 1)          # index of matching ']'
+                j = l + 1
+                while j < r:
+                    if ids_b[j] in digit_ids:
+                        t_idx = j - 1  # position that predicts this digit
+                        if 0 <= t_idx < Tm1:
+                            ce_mask[b, t_idx] = False
+                    j += 1
             except ValueError:
                 pass
 
