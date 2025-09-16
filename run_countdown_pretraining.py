@@ -67,7 +67,7 @@ HPARAMS = {
     "n_layers": 4,
     "epochs": 1000,
     "patience": 20,
-    "batch_size": 32,
+    "batch_size": 64,
     "lr": 3e-4,
     "weight_decay": 0.01,
     "train_split_ratio": 0.9,
@@ -338,6 +338,11 @@ def parse_initial_numbers(prompt_text: str) -> Optional[List[int]]:
 # =========================
 inference_mode = getattr(torch, "inference_mode", torch.no_grad)
 
+def _ints_in(s: str) -> List[int]:
+    """Extract all signed integers from a string (robust to junk like '*')."""
+    return [int(x) for x in re.findall(r"-?\d+", s)]
+
+
 @inference_mode()
 def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batches=4):
     """Evaluates the model on granular metrics without relying on a single "correct" answer."""
@@ -370,8 +375,9 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
                 tgt_val = int(tgt_m.group(1))
                 states = re.findall(r"\[\s*([^\]]*?)\s*\]", gen_text)
                 if states:
-                    last_nums = [int(z) for z in re.split(r"[,\s]+", states[-1].strip()) if z]
-                    if len(last_nums) == 1 and last_nums[0] == tgt_val: n_verified_ok += 1
+                    last_nums = _ints_in(states[-1])
+                    if len(last_nums) == 1 and last_nums[0] == tgt_val:
+                        n_verified_ok += 1
             initial_nums = parse_initial_numbers(prompt_text)
             if initial_nums:
                 steps = re.findall(r"\[\s*([^\]]*?)\s*\]\s*->\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*(\d+)\s*->\s*\[\s*([^\]]*?)\s*\]", gen_text)
@@ -384,8 +390,8 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
                     if is_arith_ok: step_ok += 1
                     step_state_total += 1
                     try:
-                        stated_before = Counter(int(z) for z in re.split(r"[,\s]+", before_str.strip()) if z)
-                        stated_after  = Counter(int(z) for z in re.split(r"[,\s]+", after_str.strip()) if z)
+                        stated_before = Counter(_ints_in(before_str))
+                        stated_after  = Counter(_ints_in(after_str))
                         if stated_before != current_state or not is_arith_ok: continue
                         if current_state.get(n1, 0) == 0 or current_state.get(n2, 0) - (n1 == n2) < 0: continue
                         current_state[n1] -= 1;
@@ -701,7 +707,7 @@ def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None, amp_d
 
     for x, y in loader:
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp), torch.set_grad_enabled(is_train):
+        with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp), torch.set_grad_enabled(is_train):
             hidden_states = model_to_call.forward_features(x)
             loss, correct, n_tokens = compute_masked_loss(model_to_call, hidden_states, y, tok)
         if n_tokens > 0 or is_train:
@@ -754,7 +760,7 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
 
     for _ in range(min(max_out, base_model.max_len - len(prompt_ids))):
         if x.size(1) >= base_model.max_len: break
-        with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=use_amp):
+        with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
             logits = base_model(x)[:, -1, :].squeeze(0).float()
 
         logits[tokenizer.pad_id] = float("-inf")
