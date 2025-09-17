@@ -13,11 +13,15 @@ The process involves several key stages:
     architecture for sequence generation tasks, similar to models like GPT.
 4.  **Training:** The model is trained to predict the next token in a solution sequence,
     given the problem and the preceding tokens. It uses a standard training loop with an
-    AdamW optimizer, gradient clipping, and an early stopping mechanism. This version
-    includes a hybrid loss function to specifically improve arithmetic correctness.
+    AdamW optimizer, gradient clipping, and an early stopping mechanism. This version uses
+    masked cross-entropy with a small EOS-step upweight, and **omits the final post-state**:
+    after the final `a op b = c`, we go **straight to `; EXPR ...`**. We also add a small
+    **honesty loss** that compares the model's digit predictions after the last `=` to the
+    **computed** arithmetic result of the preceding `a op b` (not the dataset label).
 5.  **Evaluation:** After training, the model's performance is evaluated on a held-out
     validation set. Metrics include exact program match, the validity of generated
-    arithmetic operations, and the consistency of state transitions.
+    arithmetic operations, and whether the **final result equals the target** (since the
+    final post-state is omitted).
 6.  **Inference:** The script includes a sampling function to generate solutions for new
     Countdown problems, with options for both greedy decoding and controlled stochasticity.
 """
@@ -55,6 +59,7 @@ if torch.cuda.is_available():
 # CONFIGURATION & HYPERPARAMETERS
 # =========================
 HPARAMS = {
+    "run_tag": "exp6",     # prefix for artifacts; "" disables
     "num_sources": 6,
     "num_samples": 100000,
     "max_solutions": 1,  # use only one solution per problem for a clearer signal
@@ -71,11 +76,9 @@ HPARAMS = {
     "lr": 3e-4,
     "weight_decay": 0.01,
     "train_split_ratio": 0.9,
-    # Loss weights
-    "lambda_transition_ce": 0.25, # CE only on the final post-state bracket span
-    "lambda_final_expr": 0.25,    # CE on tokens after EXPR
-    "lambda_last_equation": 0.5,  # last equation loss (a op b = c)
-    "lambda_eos_margin": 0.5,     # weight for EOS margin auxiliary
+    # Loss shaping (simple mode)
+    "eos_ce_weight": 2.0,         # small upweight on the EOS prediction step (CE)
+    "honesty_loss_weight": 0.5,   # weight for HONESTY loss on digits after last '='
     "use_gradient_checkpointing": False,
     "seed": 42,
     # --- Stochastic decision, deterministic execution (inference) ---
@@ -88,6 +91,10 @@ SAFE_MAX_LEN = int(os.environ.get("MAX_SEQ_LEN", "2048"))
 DATA_GEN_ATTEMPT_MULTIPLIER = 800
 DATA_GEN_MIN_ATTEMPTS = 8000
 NUM_INFERENCE_EXAMPLES = 5
+
+def tag(name: str) -> str:
+    rt = str(HPARAMS.get("run_tag", "")).strip()
+    return f"{rt}_{name}" if rt else name
 
 # =========================
 # Countdown Solver & Data Formatting
@@ -192,18 +199,20 @@ def steps_to_program(initial_numbers: List[int], solution_steps: List, target: i
  
     out = []
     current_numbers = Counter(initial_numbers)
-    for n1, op, n2, res in solution_steps:
+    for si, (n1, op, n2, res) in enumerate(solution_steps):
         before_state_str = ', '.join(str(x) for x in sorted(current_numbers.elements()))
         out.append(f"[ {before_state_str} ] ->")
-        out.append(f"{n1} {op} {n2} = {res} ->")
+        out.append(f"{n1} {op} {n2} = {res}")
         current_numbers[n1] -= 1
         current_numbers[n2] -= 1
         for k in {n1, n2}:
             if current_numbers.get(k, 0) <= 0:
                 current_numbers.pop(k, None)
         current_numbers[res] += 1
-        after_state_str = ', '.join(str(x) for x in sorted(current_numbers.elements()))
-        out.append(f"[ {after_state_str} ] ;")
+        # For all but the final step, include the transition arrow and post-state.
+        if si < len(solution_steps) - 1:
+            after_state_str = ', '.join(str(x) for x in sorted(current_numbers.elements()))
+            out.append(f" -> [ {after_state_str} ] ;")
     program_str = " ".join(out)
     program_str = re.sub(r"\s*;\s*$", "", program_str)
     
@@ -349,7 +358,7 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
     base_model = model.module if hasattr(model, "module") else model
     base_model.eval()
     norm = lambda s: re.sub(r"\s+", " ", s).strip()
-    n_prog_em, n, n_verified_ok, step_ok, step_total, step_state_ok, step_state_total = 0, 0, 0, 0, 0, 0, 0
+    n_prog_em, n, n_final_ok, step_ok, step_total, step_state_ok, step_state_total = 0, 0, 0, 0, 0, 0, 0
 
     it = iter(val_loader)
     for _ in range(max_batches):
@@ -370,17 +379,23 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
             # With EXPR, compare full normalized strings
             if norm(gen_text) == norm(tgt_text):
                 n_prog_em += 1
+            # Final-result==target metric (works without a final post-state):
             tgt_m = re.search(r"TGT:\s*(\d+)", prompt_text)
             if tgt_m:
                 tgt_val = int(tgt_m.group(1))
-                states = re.findall(r"\[\s*([^\]]*?)\s*\]", gen_text)
-                if states:
-                    last_nums = _ints_in(states[-1])
-                    if len(last_nums) == 1 and last_nums[0] == tgt_val:
-                        n_verified_ok += 1
+                eqs = list(re.finditer(r"(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*(\d+)", gen_text))
+                if eqs:
+                    rhs = int(eqs[-1].group(4))
+                    if rhs == tgt_val:
+                        n_final_ok += 1
             initial_nums = parse_initial_numbers(prompt_text)
             if initial_nums:
-                steps = re.findall(r"\[\s*([^\]]*?)\s*\]\s*->\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*(\d+)\s*->\s*\[\s*([^\]]*?)\s*\]", gen_text)
+                # For per-step checks, keep requiring an explicit post-state; the final step
+                # (which now lacks it) will simply not be counted here.
+                steps = re.findall(
+                    r"\[\s*([^\]]*?)\s*\]\s*->\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*(\d+)\s*->\s*\[\s*([^\]]*?)\s*\]",
+                    gen_text
+                )
                 current_state = Counter(initial_nums)
                 for before_str, n1_str, op, n2_str, res_str, after_str in steps:
                     n1, n2, res = int(n1_str), int(n2_str), int(res_str)
@@ -402,7 +417,9 @@ def evaluate_program_metrics(model, tok, val_loader, device, max_out, max_batche
                         if current_state == stated_after: step_state_ok += 1
                     except Exception: pass
     if n == 0: raise RuntimeError("Evaluation failed: No valid samples were processed.")
-    return dict(samples=n, program_exact_match=n_prog_em / n, verified_target_state_accuracy=n_verified_ok / n,
+    return dict(samples=n,
+                program_exact_match=n_prog_em / n,
+                final_result_target_accuracy=n_final_ok / n,
                 op_valid_rate=(step_ok / step_total) if step_total else 0.0,
                 op_state_consistent_rate=(step_state_ok / step_state_total) if step_state_total else 0.0)
 
@@ -463,173 +480,88 @@ class DecoderOnly(nn.Module):
         h = self.forward_features(x)
         return self.head(h)
 
-def _last_step_spans(token_ids: torch.Tensor, tok) -> Optional[Tuple[int, int, int]]:
-    """
-    Return (eq_idx, post_state_l, post_state_r_exclusive) for the *last* step before EXPR (or EOS).
-    We look for "... a op b = c -> [ after ]" and return indices in token space.
-    """
-    ids = token_ids.tolist()
-    try:
-        end = ids.index(tok.tok2id['EXPR'])
-    except ValueError:
-        end = len(ids)
-    eq_id, arr_id, lbr, rbr = tok.tok2id['='], tok.tok2id['->'], tok.tok2id['['], tok.tok2id[']']
-    # last '=' before end
-    eq_positions = [i for i, t in enumerate(ids[:end]) if t == eq_id]
-    if not eq_positions:
-        return None
-    eq_idx = eq_positions[-1]
-    # find the "-> [ ... ]" that follows this '='
-    try:
-        arrow2 = ids.index(arr_id, eq_idx + 1)
-        l = ids.index(lbr, arrow2 + 1)
-        r = ids.index(rbr, l + 1) + 1  # exclusive
-    except ValueError:
-        return None
-    return eq_idx, l, r
-
- 
 def compute_masked_loss(model, hidden_states, targets, tok):
+    """Simple CE:
+       - supervise all tokens from SEP through EOS (inclusive of the EOS prediction step),
+       - BUT mask the final result digits immediately after the last '='
+         (they are guided only by the HONESTY loss, not CE).
+       EOS step is upweighted."""
     h_for_pred = hidden_states[:, :-1, :].contiguous()
     t_for_pred = targets[:, 1:].contiguous()
-    B, Tm1, D = h_for_pred.shape
+    B, Tm1, _ = h_for_pred.shape
     idx = torch.arange(Tm1, device=targets.device).unsqueeze(0)
-    RP = tok.tok2id[')']  # right-paren token id (used in multiple scopes)
 
     with torch.no_grad():
         sep_pos = (targets == tok.sep_id).int().argmax(dim=1)
         eos_pos = (targets == tok.eos_id).int().argmax(dim=1)
-        # Base CE mask on (SEP, EOS)  — include first token after SEP
-        base_ce_mask = (idx >= sep_pos.unsqueeze(1)) & (idx + 1 < eos_pos.unsqueeze(1)) \
-                       & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
-        ce_mask = base_ce_mask.clone()
-
-        # ===== A) Remove CE on result digits after every "=" (before EXPR) =====
-        eq_id = tok.tok2id['=']
-        digit_ids = [tok.tok2id[str(d)] for d in range(10)]
-        for b in range(B):
-            ids_b = targets[b].tolist()
-            try:
-                end_limit = ids_b.index(tok.tok2id['EXPR'])
-            except ValueError:
-                end_limit = len(ids_b)
-            j = 0
-            while j < end_limit:
-                if ids_b[j] == eq_id:
-                    k = j + 1
-                    while k < end_limit and ids_b[k] in digit_ids:
-                        if k - 1 < ce_mask.size(1):
-                            ce_mask[b, k - 1] = False  # do not train result digits with CE
-                        k += 1
-                    j = k
-                else:
-                    j += 1
-
-        # ===== B) Stop CE on trailing EXPR tokens and upweight EOS right after final ')' =====
+        # include EOS prediction step: idx+1 <= eos_pos
+        ce_mask = (idx >= sep_pos.unsqueeze(1)) & (idx + 1 <= eos_pos.unsqueeze(1)) & (t_for_pred != tok.pad_id)
         ce_weights = torch.ones_like(ce_mask, dtype=h_for_pred.dtype, device=h_for_pred.device)
-        for b in range(B):
-            ids_b = targets[b].tolist()
-            try:
-                eos_idx = ids_b.index(tok.eos_id)
-            except ValueError:
-                continue
-            rpars = [i for i,t in enumerate(ids_b[:eos_idx]) if t == RP]
-            if not rpars:
-                continue
-            r = rpars[-1]
-            # remove CE supervision for any tokens after last ')' and before EOS
-            for j in range(r + 1, eos_idx):
-                if j - 1 < ce_mask.size(1):
-                    ce_mask[b, j - 1] = False
-            # upweight CE exactly where EOS must be predicted (time r -> target r+1)
-            if r < ce_weights.size(1):
-                ce_weights[b, r] = 5.0  # tuneable
-        # Build a mask for the final post-state bracket span ONLY (last transition)
-        last_transition_mask = torch.zeros_like(base_ce_mask)
-        for b in range(B):
-            spans = _last_step_spans(targets[b], tok)
-            if spans is None:
-                continue
-            _, post_l, post_r = spans
-            l = max(0, post_l - 1)  # predict '[' at t = (l - 1)
-            r = post_r
-            # include the following ';' if present
-            semi = tok.tok2id[';']
-            if r < targets.size(1) and targets[b, r].item() == semi:
-                r += 1
-            # supervise t indices that predict tokens in [post_l, r_exclusive)
-            # i.e., t ∈ [l, r-1)
-            if r - 1 > l:
-                last_transition_mask[b, l:r-1] = True
+        # small upweight on the EOS prediction timestep
+        eos_w = float(HPARAMS.get("eos_ce_weight", 1.0))
+        if eos_w != 1.0:
+            for b in range(B):
+                t_eos = int(eos_pos[b].item()) - 1
+                if 0 <= t_eos < Tm1:
+                    ce_weights[b, t_eos] = eos_w
 
-        # Base CE excludes the last transition span to avoid double counting
-        ce_mask = ce_mask & (~last_transition_mask)
-
-    selected_h = h_for_pred[ce_mask]; selected_t = t_for_pred[ce_mask]; selected_w = ce_weights[ce_mask]
-    # debug: supervised token count
-    # logging.debug(f"supervised_tokens={int(ce_mask.sum().item())}")
-    if selected_t.numel() == 0:
-        base_cross_entropy, ce_correct, ce_tokens = hidden_states.sum() * 0.0, 0, 0
-    else:
-        logits = model.head(selected_h)
-        per_tok = F.cross_entropy(logits, selected_t, reduction='none')
-        base_cross_entropy = (per_tok * selected_w).mean()
-        ce_correct = (logits.argmax(-1) == selected_t).sum().item()
-        ce_tokens = selected_t.numel()
-
-
-    # === Last-transition loss (CE on final [ ... ] bracket span) ===
-    post_h = h_for_pred[last_transition_mask]
-    post_t = t_for_pred[last_transition_mask]
-    if post_t.numel() == 0:
-        last_transition_loss = hidden_states.sum() * 0.0
-    else:
-        last_transition_loss = F.cross_entropy(model.head(post_h), post_t)
-
-    # ===== Final-expression loss (only tokens after EXPR, capped at final ')') =====
-    with torch.no_grad():
-        Tm1 = t_for_pred.size(1)
-        idx = torch.arange(Tm1, device=targets.device).unsqueeze(0)
-        has_expr = (targets == tok.tok2id['EXPR']).any(dim=1)
-        expr_pos = (targets == tok.tok2id['EXPR']).int().argmax(dim=1)
-        expr_pos = torch.where(has_expr, expr_pos, torch.full_like(expr_pos, Tm1))  # if missing, mask empty
-        eos_pos  = (targets == tok.eos_id).int().argmax(dim=1)
-        # cap supervision at the last ')' before EOS (RP defined above)
-        last_r = torch.full_like(eos_pos, fill_value=Tm1 - 1)
-        for b in range(B):
-            ids_b = targets[b].tolist()
-            try:
-                e = ids_b.index(tok.eos_id)
-            except ValueError:
-                continue
-            rpars = [i for i, t in enumerate(ids_b[:e]) if t == RP]
-            if rpars:
-                last_r[b] = rpars[-1]
-        expr_mask = (idx >= expr_pos.unsqueeze(1)) & (idx <= last_r.unsqueeze(1)) \
-                    & (t_for_pred != tok.pad_id) & (t_for_pred != tok.eos_id)
-    sum_h = h_for_pred[expr_mask]
-    sum_t = t_for_pred[expr_mask]
-    if sum_t.numel() == 0:
-        final_expression_loss = hidden_states.sum() * 0.0
-    else:
-        final_expression_loss = F.cross_entropy(model.head(sum_h), sum_t)
-
-    # === Last-equation loss: compare model's digit logits to value(a op b) (only last equation) ===
-    with torch.no_grad():
+        # mask ONLY the final result digits (after last '=')
         digit_ids = [tok.tok2id[str(d)] for d in range(10)]
-        eq_meta = []  # (b, pos_list, truth_value_float)
+        eq_id = tok.tok2id['=']
         for b in range(B):
             ids_b = targets[b].tolist()
+            # end_limit = EXPR or end of sequence
             try:
                 end_limit = ids_b.index(tok.tok2id['EXPR'])
             except ValueError:
                 end_limit = len(ids_b)
-            # find last '=' before EXPR
-            eq_positions = [i for i, t in enumerate(ids_b[:end_limit]) if t == tok.tok2id['=']]
+            # last '=' before EXPR
+            eq_positions = [i for i, t in enumerate(ids_b[:end_limit]) if t == eq_id]
             if not eq_positions:
                 continue
             eq = eq_positions[-1]
-            # parse a,op,b,c from text for truth value
+            # mask digits after '=' (final result number)
+            j = eq + 1
+            while j < end_limit and ids_b[j] in digit_ids:
+                t_idx = j - 1  # position that predicts ids_b[j]
+                if 0 <= t_idx < Tm1:
+                    ce_mask[b, t_idx] = False
+                j += 1
+
+
+    selected_h = h_for_pred[ce_mask]
+    selected_t = t_for_pred[ce_mask]
+    selected_w = ce_weights[ce_mask]
+    if selected_t.numel() == 0:
+        ce_loss, ce_correct, ce_tokens = hidden_states.sum() * 0.0, 0, 0
+    else:
+        logits = model.head(selected_h)
+        per_tok = F.cross_entropy(logits, selected_t, reduction='none')
+        ce_loss = (per_tok * selected_w).mean()
+        ce_correct = (logits.argmax(-1) == selected_t).sum().item()
+        ce_tokens = selected_t.numel()
+    # -------------------
+    # Honesty loss (digits after the last '=' vs. computed a ∘ b)
+    # -------------------
+    lambda_hon = float(HPARAMS.get("honesty_loss_weight", 0.0))
+    if lambda_hon > 0.0:
+        digit_ids = [tok.tok2id[str(d)] for d in range(10)]
+        eq_tok = tok.tok2id['=']
+        honesty_terms = []
+        all_logits = model.head(h_for_pred)  # (B, Tm1, V)
+        for b in range(B):
+            ids_b = targets[b].tolist()
+            # limit to tokens before EXPR (or full length if missing)
+            try:
+                end_limit = ids_b.index(tok.tok2id['EXPR'])
+            except ValueError:
+                end_limit = len(ids_b)
+            # last '=' before EXPR
+            eq_positions = [i for i, t in enumerate(ids_b[:end_limit]) if t == eq_tok]
+            if not eq_positions:
+                continue
+            eq = eq_positions[-1]
+            # parse a, op, b from the text BEFORE '='
             text_b = tok.decode([t for t in ids_b[:end_limit] if t not in (tok.pad_id, tok.eos_id)])
             m_all = list(re.finditer(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*([0-9]+)", text_b))
             if not m_all:
@@ -638,66 +570,31 @@ def compute_masked_loss(model, hidden_states, targets, tok):
             if   op == '+': truth_val = a_v + b_v
             elif op == '-': truth_val = a_v - b_v
             elif op == '*': truth_val = a_v * b_v
-            elif op == '/': truth_val = a_v // b_v if b_v != 0 else 0
+            elif op == '/': truth_val = (a_v // b_v) if b_v != 0 else 0
             else:           truth_val = 0
-            # collect t indices that predict the result digits right after '='
-            j = eq + 1
+            truth_digits = [int(ch) for ch in str(truth_val)]
+            # positions (t indices) that PREDICT the result digits after '='
             pos_list = []
-            while j < len(ids_b) and ids_b[j] in digit_ids:
-                if 0 <= (j - 1) < Tm1:
-                    pos_list.append(j - 1)
+            j = eq + 1
+            while j < end_limit and ids_b[j] in digit_ids:
+                t_idx = j - 1  # time t that predicts ids_b[j]
+                if 0 <= t_idx < Tm1:
+                    pos_list.append(t_idx)
                 j += 1
-            if pos_list:
-                eq_meta.append((b, pos_list, float(truth_val)))
-    if eq_meta:
-        all_logits = model.head(h_for_pred)  # (B, Tm1, V)
-        losses = []
-        for b_idx, pos_list, truth_val in eq_meta:
-            logits_digits = all_logits[b_idx, pos_list][:, digit_ids]  # (L,10)
-            probs = torch.softmax(logits_digits, dim=-1)
-            digits = torch.arange(10, device=targets.device, dtype=probs.dtype)
-            exp_digits = (probs * digits).sum(dim=-1)  # (L,)
-            Ld = len(pos_list)
-            # stable, device-friendly powers of 10
-            exps = torch.arange(Ld - 1, -1, -1, device=targets.device, dtype=probs.dtype)
-            weights = torch.pow(torch.tensor(10.0, device=targets.device, dtype=probs.dtype), exps)
-            exp_num = (exp_digits * weights).sum()
-            losses.append(torch.abs(exp_num - torch.tensor(truth_val, device=targets.device, dtype=probs.dtype)))
-        last_equation_loss = torch.stack(losses).mean()
-    else:
-        last_equation_loss = hidden_states.sum() * 0.0
-    # Optional: EOS margin auxiliary (sharpen stopping). Keep weight small.
-    m = 2.0
-    eos_margin_losses = []
-    with torch.no_grad():
-        eos_targets = []
-        for b in range(B):
-            ids_b = targets[b].tolist()
-            try:
-                eos_idx = ids_b.index(tok.eos_id)
-            except ValueError:
+            if not pos_list:
                 continue
-            rpars = [i for i,t in enumerate(ids_b[:eos_idx]) if t == RP]
-            if not rpars: continue
-            eos_targets.append((b, rpars[-1]))
-    for b, r in eos_targets:
-        if 0 <= r < h_for_pred.size(1):
-            z = model.head(h_for_pred[b, r:r+1, :]).squeeze(0)  # (V,)
-            eos_logit = z[tok.eos_id]
-            z_ = z.clone(); z_[tok.eos_id] = -1e9
-            mx = z_.max()
-            eos_margin_losses.append(F.relu(m + mx - eos_logit))
-    eos_margin_loss = torch.stack(eos_margin_losses).mean() if eos_margin_losses else hidden_states.sum()*0.0
-
-    total_loss = (
-        base_cross_entropy
-        + HPARAMS.get("lambda_transition_ce", 0.0) * last_transition_loss
-        + HPARAMS.get("lambda_final_expr", 0.0) * final_expression_loss
-        + HPARAMS.get("lambda_last_equation", 0.0) * last_equation_loss
-        + HPARAMS.get("lambda_eos_margin", 0.0) * eos_margin_loss
-
-    )
-    return total_loss, ce_correct, ce_tokens
+            # align lengths safely
+            L = min(len(pos_list), len(truth_digits))
+            if L == 0:
+                continue
+            logits_digits = all_logits[b, pos_list[:L], :][:, digit_ids]  # (L, 10)
+            target_digits = torch.tensor(truth_digits[:L], device=targets.device, dtype=torch.long)  # 0..9
+            honesty_terms.append(F.cross_entropy(logits_digits, target_digits))
+        honesty_loss = (torch.stack(honesty_terms).mean() if honesty_terms else ce_loss.detach()*0.0)
+        total_loss = ce_loss + lambda_hon * honesty_loss
+    else:
+        total_loss = ce_loss
+    return total_loss, ce_correct, ce_tokens 
 
 
 def run_epoch(is_train, model, loader, device, tok, opt=None, scaler=None, amp_dtype=torch.float32, use_amp=False):
@@ -743,6 +640,7 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
     decoded = []; steps_done, seen_eq_this_step = 0, False
     awaiting_first_digit, operator_sample_pending = False, False
     in_expr = False
+    expr_first_token = False
 
     def _multinomial_from_logits(logits_1d: torch.Tensor) -> int:
         probs = torch.softmax(logits_1d / max(1e-6, temp_ops), dim=-1)
@@ -766,10 +664,14 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
         logits[tokenizer.pad_id] = float("-inf")
         logits[tokenizer.sep_id] = float("-inf")
 
-        # After EXPR, allow only digits, ops, parens (and EOS)
+        # After EXPR, allow only digits, ops, parens (and EOS).
+        # Additionally, restrict the *first* token after EXPR to only '(' or a digit.
         if in_expr:
             keep = [tokenizer.tok2id[str(d)] for d in range(10)] + \
-                   [tokenizer.tok2id[o] for o in ['+','-','*','/','(',')']] + [tokenizer.eos_id] 
+                   [tokenizer.tok2id[o] for o in ['+','-','*','/','(',')']] + [tokenizer.eos_id]
+            if expr_first_token:
+                keep = [tokenizer.tok2id[str(d)] for d in range(10)] + [tokenizer.tok2id['(']]
+
             mask = torch.full_like(logits, float("-inf"))
             mask[keep] = 0.0
             logits = logits + mask
@@ -783,19 +685,24 @@ def sample_one(model, tokenizer, prompt_ids, max_out, device, amp_dtype=torch.fl
         
         if nxt in stop_ids: break
         gen.append(nxt)
-        tok = id2tok.get(nxt, '?')
-        decoded.append(tok)
+        tok_str = id2tok.get(nxt, '?')   # avoid shadowing 'tok' tokenizer elsewhere
+        decoded.append(tok_str)
 
-        if tok == 'EXPR': in_expr = True
+        if tok_str == 'EXPR':
+            in_expr = True
+            expr_first_token = True
+        elif in_expr and expr_first_token and (tok_str.isdigit() or tok_str == '('):
+            # we've consumed the first EXPR token
+            expr_first_token = False
 
         if steps_done < stochastic_steps and not awaiting_first_digit and not operator_sample_pending:
             if len(decoded) >= 1 and decoded[-1] == '->': awaiting_first_digit = True
-        if awaiting_first_digit and tok.isdigit():
+        if awaiting_first_digit and tok_str.isdigit():
             awaiting_first_digit, operator_sample_pending = False, True
-        elif operator_sample_pending and tok in ['+','-','*','/']:
+        elif operator_sample_pending and tok_str in ['+','-','*','/']:
             operator_sample_pending = False
-        if tok == '=': seen_eq_this_step = True
-        if tok == '->' and seen_eq_this_step and not awaiting_first_digit and not operator_sample_pending:
+        if tok_str == '=': seen_eq_this_step = True
+        if tok_str == '->' and seen_eq_this_step and not awaiting_first_digit and not operator_sample_pending:
             steps_done += 1; seen_eq_this_step = False
         
         x = torch.cat([x, torch.tensor([[nxt]], device=device)], dim=1)
@@ -831,7 +738,11 @@ def main():
         archive_dir = "exp_logs_archive"
         if global_rank == 0:
             os.makedirs(archive_dir, exist_ok=True) 
-        base_filename = f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}_K{config.get('max_solutions',1)}_expr_tokenized.pt"
+        # Bump cache key to reflect "no final post-state" format to avoid mixing old data.
+        base_filename = (
+            f"countdown_data_{config['num_samples']}_samples_{config['num_sources']}"
+            f"_K{config.get('max_solutions',1)}_expr_no_final_state.pt"
+        )
         cache_filename = os.path.join(archive_dir, base_filename)
         if global_rank == 0 and (not config['use_cached_data'] or not os.path.exists(cache_filename)):
             logging.info("Starting data generation...")
@@ -913,10 +824,8 @@ def main():
 {f'Total Parameters:':<32} {sum(p.numel() for p in model.parameters() if p.requires_grad):,} 
 {f'Max Sequence Length:':<32} {ml} (prompt={mi_print}, solution={mo})
 {f'Batch Size / LR:':<32} {config['batch_size']} / {config['lr']}
-{f'λ last_transition:':<32} {config.get('lambda_transition_ce', 0.0)}
-{f'λ final_expression:':<32} {config.get('lambda_final_expr', 0.0)}
-{f'λ last_equation:':<32} {config.get('lambda_last_equation', 0.0)}
-{f'λ eos_margin:':<32} {config.get('lambda_eos_margin', 0.0)}
+{f'EOS CE weight:':<32} {config.get('eos_ce_weight', 1.0)}
+{f'Honesty weight:':<32} {config.get('honesty_loss_weight', 0.0)}
 {'='*width}"""
             logging.info(log_msg)
 
@@ -939,7 +848,7 @@ def main():
                 logging.info(f"Epoch {ep+1:04d} | Train loss {tr_loss:.4f} | Val loss {current_val_loss:.4f}")
                 if current_val_loss < best_val_loss:
                     best_val_loss, patience_counter = current_val_loss, 0
-                    torch.save({"state": (model.module.state_dict() if is_ddp else model.state_dict()), "config": config}, "best_model.pt")
+                    torch.save({"state": (model.module.state_dict() if is_ddp else model.state_dict()), "config": config}, tag("best_model.pt"))
                     logging.info(f"  -> New best val loss. Checkpoint saved.")
                 else:
                     patience_counter += 1
@@ -950,13 +859,19 @@ def main():
         if is_ddp: dist.barrier()
 
         if global_rank == 0:
-            plot_training_results(history)
+            plot_training_results(history, filename=tag("countdown_training_plot.png"))
             logging.info("\nLoading best model for final evaluation...")
-            ckpt = torch.load("best_model.pt", map_location=device)
+            ckpt = torch.load(tag("best_model.pt"), map_location=device)
             final_model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], ml, tok.pad_id, False).to(device)
             final_model.load_state_dict(ckpt['state'])
             metrics = evaluate_program_metrics(final_model, tok, val_loader_eval, device, config['max_output_len'])
-            logging.info(f"\n--- Final Evaluation Metrics ---\n  Program Exact Match:         {metrics['program_exact_match']*100:.2f}%\n  Verified Target-State Acc.:  {metrics['verified_target_state_accuracy']*100:.2f}%\n  Op Validity Rate:            {metrics['op_valid_rate']*100:.2f}%\n  Op State-Consistency Rate:   {metrics['op_state_consistent_rate']*100:.2f}%\n----------------------------------\non {metrics['samples']} validation samples.")
+            logging.info(f"\n--- Final Evaluation Metrics ---\n"
+             f"  Program Exact Match:         {metrics['program_exact_match']*100:.2f}%\n"
+             f"  Final Result==Target Acc.:   {metrics['final_result_target_accuracy']*100:.2f}%\n"
+             f"  Op Validity Rate:            {metrics['op_valid_rate']*100:.2f}%\n"
+             f"  Op State-Consistency Rate:   {metrics['op_state_consistent_rate']*100:.2f}%\n"
+             f"----------------------------------\n"
+             f"on {metrics['samples']} validation samples.")
             logging.info("\n--- Inference Examples ---")
             for i in range(min(NUM_INFERENCE_EXAMPLES, len(va))):
                 x, _ = va[i]; ids = x.tolist(); sep_idx = ids.index(tok.sep_id)
@@ -967,7 +882,8 @@ def main():
         if is_ddp: cleanup_ddp()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[logging.FileHandler("run_countdown_pretraining.log", mode='w'), logging.StreamHandler(sys.stdout)])
+    logging.basicConfig(level=logging.INFO, format='%(message)s', 
+                        handlers=[logging.FileHandler(tag("run_countdown_pretraining.log"), mode='w'), logging.StreamHandler(sys.stdout)])
     start_time = time.time()
     main()
     elapsed = time.time() - start_time
