@@ -1,0 +1,17 @@
+[RANK 0] Loading data from exp_logs_archive/countdown_data_100000_samples_6_K1_expr_no_final_state.pt
+
+==============================================================
+          Run Configuration (Countdown Pretraining)           
+==============================================================
+PyTorch Version:                 2.7.1+cu126
+DDP Enabled:                     No
+Total Dataset Size:              100,000 samples
+Vocabulary Size:                 28 tokens
+d_model / n_heads / n_layers:    128 / 4 / 4
+Total Parameters:                831,232 
+Max Sequence Length:             268 (prompt=26, solution=241)
+Batch Size / LR:                 2048 / 0.0003
+EOS CE weight:                   2.0
+Honesty weight:                  1.0
+==============================================================
+Starting training on rank 0...

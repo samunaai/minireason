@@ -1,0 +1,106 @@
+[RANK 0] Loading data from exp_logs_archive/countdown_data_100000_samples_6_K1_expr_tokenized.pt
+
+==============================================================
+          Run Configuration (Countdown Pretraining)           
+==============================================================
+PyTorch Version:                 2.7.1+cu126
+DDP Enabled:                     No
+Total Dataset Size:              100,000 samples
+Vocabulary Size:                 28 tokens
+d_model / n_heads / n_layers:    128 / 4 / 4
+Total Parameters:                832,000 
+Max Sequence Length:             274 (prompt=26, solution=247)
+Batch Size / LR:                 64 / 0.0003
+λ last_transition:               0.25
+λ final_expression:              0.25
+λ last_equation:                 0.5
+λ eos_margin:                    0.5
+==============================================================
+Starting training on rank 0...
+Epoch 0001 | Train loss 47.5962 | Val loss 11.2356
+  -> New best val loss. Checkpoint saved.
+Epoch 0002 | Train loss 9.1446 | Val loss 8.5547
+  -> New best val loss. Checkpoint saved.
+Epoch 0003 | Train loss 6.8803 | Val loss 5.9915
+  -> New best val loss. Checkpoint saved.
+Epoch 0004 | Train loss 5.3224 | Val loss 4.2246
+  -> New best val loss. Checkpoint saved.
+Epoch 0005 | Train loss 4.2897 | Val loss 3.8442
+  -> New best val loss. Checkpoint saved.
+Epoch 0006 | Train loss 3.6930 | Val loss 2.9768
+  -> New best val loss. Checkpoint saved.
+Epoch 0007 | Train loss 2.8399 | Val loss 2.4706
+  -> New best val loss. Checkpoint saved.
+Epoch 0008 | Train loss 2.3001 | Val loss 2.1706
+  -> New best val loss. Checkpoint saved.
+Epoch 0009 | Train loss 1.8408 | Val loss 1.4952
+  -> New best val loss. Checkpoint saved.
+Epoch 0010 | Train loss 1.5454 | Val loss 1.6300
+Epoch 0011 | Train loss 1.3176 | Val loss 1.1232
+  -> New best val loss. Checkpoint saved.
+Epoch 0012 | Train loss 1.1523 | Val loss 0.9931
+  -> New best val loss. Checkpoint saved.
+Epoch 0013 | Train loss 0.9610 | Val loss 1.1226
+Epoch 0014 | Train loss 0.7597 | Val loss 0.6784
+  -> New best val loss. Checkpoint saved.
+Epoch 0015 | Train loss 0.6167 | Val loss 0.4676
+  -> New best val loss. Checkpoint saved.
+Epoch 0016 | Train loss 0.5287 | Val loss 0.4688
+Epoch 0017 | Train loss 0.4662 | Val loss 0.5192
+Epoch 0018 | Train loss 0.4311 | Val loss 0.3692
+  -> New best val loss. Checkpoint saved.
+Epoch 0019 | Train loss 0.3911 | Val loss 0.3636
+  -> New best val loss. Checkpoint saved.
+Epoch 0020 | Train loss 0.5177 | Val loss 0.2712
+  -> New best val loss. Checkpoint saved.
+Epoch 0021 | Train loss 0.3195 | Val loss 0.3204
+Epoch 0022 | Train loss 0.3088 | Val loss 0.3017
+Epoch 0023 | Train loss 0.2887 | Val loss 0.3483
+Epoch 0024 | Train loss 0.2958 | Val loss 0.2412
+  -> New best val loss. Checkpoint saved.
+Epoch 0025 | Train loss 0.2503 | Val loss 0.2965
+Epoch 0026 | Train loss 0.2517 | Val loss 0.2014
+  -> New best val loss. Checkpoint saved.
+Epoch 0027 | Train loss 0.2581 | Val loss 0.2917
+Epoch 0028 | Train loss 0.2477 | Val loss 0.2462
+Epoch 0029 | Train loss 0.2387 | Val loss 0.2001
+  -> New best val loss. Checkpoint saved.
+Epoch 0030 | Train loss 0.2176 | Val loss 0.1471
+  -> New best val loss. Checkpoint saved.
+Epoch 0031 | Train loss 0.2131 | Val loss 0.2343
+Epoch 0032 | Train loss 0.2138 | Val loss 0.1931
+Epoch 0033 | Train loss 0.1875 | Val loss 0.2160
+Epoch 0034 | Train loss 0.1938 | Val loss 0.3675
+Epoch 0035 | Train loss 0.2258 | Val loss 0.2581
+Epoch 0036 | Train loss 0.1822 | Val loss 0.2086
+Epoch 0037 | Train loss 0.1765 | Val loss 0.1828
+Epoch 0038 | Train loss 0.1729 | Val loss 0.1738
+Epoch 0039 | Train loss 0.1676 | Val loss 0.1524
+Epoch 0040 | Train loss 0.1625 | Val loss 0.2258
+Epoch 0041 | Train loss 0.1856 | Val loss 0.1776
+Epoch 0042 | Train loss 0.1517 | Val loss 0.1496
+Epoch 0043 | Train loss 0.1455 | Val loss 0.1227
+  -> New best val loss. Checkpoint saved.
+Epoch 0044 | Train loss 0.1595 | Val loss 0.1492
+Epoch 0045 | Train loss 0.1509 | Val loss 0.1492
+Epoch 0046 | Train loss 0.1491 | Val loss 0.1804
+Epoch 0047 | Train loss 0.1403 | Val loss 0.1601
+Epoch 0048 | Train loss 0.1466 | Val loss 0.1127
+  -> New best val loss. Checkpoint saved.
+Epoch 0049 | Train loss 0.1437 | Val loss 0.1348
+Epoch 0050 | Train loss 0.1486 | Val loss 0.2378
+Epoch 0051 | Train loss 0.1333 | Val loss 0.1210
+Epoch 0052 | Train loss 0.1346 | Val loss 0.1244
+Epoch 0053 | Train loss 0.1289 | Val loss 0.1159
+Epoch 0054 | Train loss 0.1340 | Val loss 0.1139
+Epoch 0055 | Train loss 0.1230 | Val loss 0.2073
+Epoch 0056 | Train loss 0.1414 | Val loss 0.1476
+Epoch 0057 | Train loss 0.1233 | Val loss 0.1038
+  -> New best val loss. Checkpoint saved.
+Epoch 0058 | Train loss 0.1238 | Val loss 0.1092
+Epoch 0059 | Train loss 0.1245 | Val loss 0.1069
+Epoch 0060 | Train loss 0.1324 | Val loss 0.1430
+Epoch 0061 | Train loss 0.1218 | Val loss 0.1039
+Epoch 0062 | Train loss 0.2409 | Val loss 0.1577
+Epoch 0063 | Train loss 0.1205 | Val loss 0.1355
+Epoch 0064 | Train loss 0.1173 | Val loss 0.1401

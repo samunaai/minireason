@@ -59,7 +59,7 @@ if torch.cuda.is_available():
 # CONFIGURATION & HYPERPARAMETERS
 # =========================
 HPARAMS = {
-    "run_tag": "exp6",     # prefix for artifacts; "" disables
+    "run_tag": "exp7",     # prefix for artifacts; "" disables
     "num_sources": 6,
     "num_samples": 100000,
     "max_solutions": 1,  # use only one solution per problem for a clearer signal
@@ -72,13 +72,14 @@ HPARAMS = {
     "n_layers": 4,
     "epochs": 1000,
     "patience": 20,
-    "batch_size": 64,
+    "batch_size": 2048,
+    "num_workers": 8, # DataLoader workers (per GPU rank)
     "lr": 3e-4,
     "weight_decay": 0.01,
     "train_split_ratio": 0.9,
     # Loss shaping (simple mode)
     "eos_ce_weight": 2.0,         # small upweight on the EOS prediction step (CE)
-    "honesty_loss_weight": 0.5,   # weight for HONESTY loss on digits after last '='
+    "honesty_loss_weight": 1.0,   # weight for HONESTY loss on digits after last '='
     "use_gradient_checkpointing": False,
     "seed": 42,
     # --- Stochastic decision, deterministic execution (inference) ---
@@ -789,7 +790,7 @@ def main():
         amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
         scaler    = torch.cuda.amp.GradScaler(enabled=(use_amp and not use_bf16))
 
-        loader_num_workers = min(4, cpu_count())
+        loader_num_workers = int(HPARAMS.get("num_workers", min(4, cpu_count())))
         loader_args = {'batch_size': config['batch_size'], 'num_workers': loader_num_workers, 'pin_memory': device.type=='cuda'}
         train_sampler = DistributedSampler(tr, shuffle=True) if is_ddp else None
         train_loader = DataLoader(tr, sampler=train_sampler, shuffle=(not is_ddp), drop_last=True, persistent_workers=(loader_num_workers > 0), **loader_args)
