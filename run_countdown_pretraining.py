@@ -47,6 +47,7 @@ from tqdm import tqdm
 import matplotlib
 os.environ.setdefault("MPLBACKEND","Agg"); matplotlib.use(os.environ["MPLBACKEND"])
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -59,7 +60,7 @@ if torch.cuda.is_available():
 # CONFIGURATION & HYPERPARAMETERS
 # =========================
 HPARAMS = {
-    "run_tag": "exp7",     # prefix for artifacts; "" disables
+    "run_tag": "exp9",     # prefix for artifacts; "" disables
     "num_sources": 6,
     "num_samples": 100000,
     "max_solutions": 1,  # use only one solution per problem for a clearer signal
@@ -96,6 +97,30 @@ NUM_INFERENCE_EXAMPLES = 5
 def tag(name: str) -> str:
     rt = str(HPARAMS.get("run_tag", "")).strip()
     return f"{rt}_{name}" if rt else name
+
+def safe_torch_save(obj, path, retries=3, legacy_fallback=True):
+    """Atomic save with fsync and optional legacy serializer fallback."""
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    last_err = None
+    for i in range(retries):
+        try:
+            with open(tmp, "wb") as f:
+                torch.save(obj, f)  # new zipfile serializer
+                f.flush(); os.fsync(f.fileno())
+            os.replace(tmp, path)
+            return
+        except Exception as e:
+            last_err = e
+            time.sleep(0.2 * (i + 1))
+    if legacy_fallback:
+        # retry once with legacy serializer
+        with open(tmp, "wb") as f:
+            torch.save(obj, f, _use_new_zipfile_serialization=False)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return
+    raise last_err
 
 # =========================
 # Countdown Solver & Data Formatting
@@ -138,6 +163,8 @@ class CountdownSolver:
             for op, resv in cand:
                 new_steps = steps + [(av, op, bv, resv)]
                 rest = [item for i, item in enumerate(items) if i not in (a_idx, b_idx)]
+                # safety: ensure sorted by value before insort
+                rest.sort(key=lambda x: x[0])
                 bisect.insort(rest, (resv, "t"))
 
                 if resv == target and len(rest) == 1:
@@ -157,6 +184,8 @@ class CountdownSolver:
             for op, resv in cand:
                 new_steps = steps + [(av, op, bv, resv)]
                 rest = [item for i, item in enumerate(items) if i not in (a_idx, b_idx)]
+                # safety: ensure sorted by value before insort
+                rest.sort(key=lambda x: x[0])
                 bisect.insort(rest, (resv, "t"))
 
                 if resv == target and len(rest) == 1:
@@ -224,36 +253,36 @@ def steps_to_program(initial_numbers: List[int], solution_steps: List, target: i
 
 def _gen_chunk(args):
     chunk_samples, num_sources, seed, small_deck, large_deck, target_range, max_solutions = args
-    random.seed(seed)
-    solver = CountdownSolver()
     inputs, outputs = [], []
-    attempts = rejects_solver = 0
-    successful_attempts = 0
-    max_attempts = max(DATA_GEN_MIN_ATTEMPTS, DATA_GEN_ATTEMPT_MULTIPLIER * chunk_samples)
-
-    while len(inputs) < chunk_samples and attempts < max_attempts:
-        attempts += 1
-        min_large = max(0, num_sources - len(small_deck)); max_large = min(len(large_deck), num_sources)
-        num_large = random.randint(min_large, max_large); num_small = num_sources - num_large
-        large = random.sample(large_deck, k=num_large); small = random.sample(small_deck,  k=num_small)
-        source_numbers = large + small; random.shuffle(source_numbers)
-        target = random.randint(target_range[0], target_range[1])
-        if len(source_numbers) > 1 and target in source_numbers: continue
-        
-        sols = solver.solve(source_numbers, target, max_depth=num_sources - 1, max_solutions=max_solutions)
-        if not sols:
-            rejects_solver += 1
-            continue
-        successful_attempts += 1
-        
-        in_list = ', '.join(map(str, source_numbers))
-        for steps in sols:
-            program = steps_to_program(source_numbers, steps, target)
-            if program is None: continue
-            inputs.append(f"IN: [ {in_list} ] TGT: {target}")
-            outputs.append(program)
-
-    return inputs, outputs, attempts, rejects_solver, successful_attempts
+    attempts = rejects_solver = successful_attempts = 0
+    try:
+        random.seed(seed)
+        solver = CountdownSolver()
+        max_attempts = max(DATA_GEN_MIN_ATTEMPTS, DATA_GEN_ATTEMPT_MULTIPLIER * chunk_samples)
+        while len(inputs) < chunk_samples and attempts < max_attempts:
+            attempts += 1
+            min_large = max(0, num_sources - len(small_deck)); max_large = min(len(large_deck), num_sources)
+            num_large = random.randint(min_large, max_large); num_small = num_sources - num_large
+            large = random.sample(large_deck, k=num_large); small = random.sample(small_deck,  k=num_small)
+            source_numbers = large + small; random.shuffle(source_numbers)
+            target = random.randint(target_range[0], target_range[1])
+            if len(source_numbers) > 1 and target in source_numbers: 
+                continue
+            sols = solver.solve(source_numbers, target, max_depth=num_sources - 1, max_solutions=max_solutions)
+            if not sols:
+                rejects_solver += 1
+                continue
+            successful_attempts += 1
+            in_list = ', '.join(map(str, source_numbers))
+            for steps in sols:
+                program = steps_to_program(source_numbers, steps, target)
+                if program is None: 
+                    continue
+                inputs.append(f"IN: [ {in_list} ] TGT: {target}")
+                outputs.append(program)
+        return inputs, outputs, attempts, rejects_solver, successful_attempts, None
+    except Exception as e:
+        return [], [], attempts, rejects_solver, successful_attempts, f"{type(e).__name__}: {e}"
 
 def generate_countdown_data(config, n_workers=None):
     num_samples, num_sources = config['num_samples'], config['num_sources']
@@ -269,17 +298,25 @@ def generate_countdown_data(config, n_workers=None):
               small_deck, large_deck, target_range, max_solutions) for i in range(target_tasks)]
     
     logging.info(f"Starting parallel data generation for {num_samples:,} samples on {n_workers} workers ({len(tasks)} tasks)...")
-    ins, outs, total_attempts, total_rej_s, total_success = [], [], 0, 0, 0
+    ins, outs, total_attempts, total_rej_s, total_success, err_count = [], [], 0, 0, 0, 0
     with Pool(processes=n_workers, initializer=torch.set_num_threads, initargs=(1,)) as pool:
         pbar = tqdm(pool.imap_unordered(_gen_chunk, tasks, chunksize=2), total=len(tasks), desc="Generating Sample Batches")
-        for ins_chunk, outs_chunk, a, rs, succ in pbar:
+        for result in pbar:
+            ins_chunk, outs_chunk, a, rs, succ, err = result
+            if err:
+                err_count += 1
+                logging.warning(f"Data worker error ({err_count}): {err}")
+                continue
             ins += ins_chunk; outs += outs_chunk; total_attempts += a; total_rej_s += rs; total_success += succ
     
     avg_solutions = len(ins) / max(1, total_attempts); acc_rate = 100.0 * total_success / max(1, total_attempts)
     logging.info(f"Generated {len(ins):,} solutions from {total_attempts:,} problem draws "
           f"(~{avg_solutions:.2f} solutions/draw, {acc_rate:.1f}% draws with ≥1 solution).")
     logging.info(f"  Total Rejects (solver): {total_rej_s:,}.")
-    if len(ins) < num_samples: logging.warning(f"Warning: Underfilled. Generated {len(ins):,}/{num_samples:,} samples.")
+    if err_count > 0:
+        logging.warning(f"Encountered {err_count} worker errors during data generation.")
+    if len(ins) < num_samples: 
+        logging.warning(f"Warning: Underfilled. Generated {len(ins):,}/{num_samples:,} samples.")
     return ins[:num_samples], outs[:num_samples]
 
 # =========================
@@ -482,11 +519,13 @@ class DecoderOnly(nn.Module):
         return self.head(h)
 
 def compute_masked_loss(model, hidden_states, targets, tok):
-    """Simple CE:
-       - supervise all tokens from SEP through EOS (inclusive of the EOS prediction step),
-       - BUT mask the final result digits immediately after the last '='
-         (they are guided only by the HONESTY loss, not CE).
-       EOS step is upweighted."""
+    """Loss = CE + Honesty:
+       - CE supervises all tokens from SEP through EOS (including EOS),
+       - BUT mask the digits immediately after the **last '='** so they are not double-counted.
+       - Honesty loss applies to digits after **every '='** (all intermediate + final results),
+         comparing to the computed arithmetic result.
+       - EOS step still gets a small upweight.
+    """
     h_for_pred = hidden_states[:, :-1, :].contiguous()
     t_for_pred = targets[:, 1:].contiguous()
     B, Tm1, _ = h_for_pred.shape
@@ -520,11 +559,11 @@ def compute_masked_loss(model, hidden_states, targets, tok):
             eq_positions = [i for i, t in enumerate(ids_b[:end_limit]) if t == eq_id]
             if not eq_positions:
                 continue
-            eq = eq_positions[-1]
-            # mask digits after '=' (final result number)
-            j = eq + 1
+            # mask ONLY the digits after the final '='
+            last_eq = eq_positions[-1]
+            j = last_eq + 1
             while j < end_limit and ids_b[j] in digit_ids:
-                t_idx = j - 1  # position that predicts ids_b[j]
+                t_idx = j - 1
                 if 0 <= t_idx < Tm1:
                     ce_mask[b, t_idx] = False
                 j += 1
@@ -542,7 +581,7 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         ce_correct = (logits.argmax(-1) == selected_t).sum().item()
         ce_tokens = selected_t.numel()
     # -------------------
-    # Honesty loss (digits after the last '=' vs. computed a ∘ b)
+    # Honesty loss (digits after every '=' vs. computed a ∘ b)
     # -------------------
     lambda_hon = float(HPARAMS.get("honesty_loss_weight", 0.0))
     if lambda_hon > 0.0:
@@ -552,45 +591,40 @@ def compute_masked_loss(model, hidden_states, targets, tok):
         all_logits = model.head(h_for_pred)  # (B, Tm1, V)
         for b in range(B):
             ids_b = targets[b].tolist()
-            # limit to tokens before EXPR (or full length if missing)
             try:
                 end_limit = ids_b.index(tok.tok2id['EXPR'])
             except ValueError:
                 end_limit = len(ids_b)
-            # last '=' before EXPR
+            # find *all* '=' before EXPR
             eq_positions = [i for i, t in enumerate(ids_b[:end_limit]) if t == eq_tok]
-            if not eq_positions:
-                continue
-            eq = eq_positions[-1]
-            # parse a, op, b from the text BEFORE '='
-            text_b = tok.decode([t for t in ids_b[:end_limit] if t not in (tok.pad_id, tok.eos_id)])
-            m_all = list(re.finditer(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*([0-9]+)", text_b))
-            if not m_all:
-                continue
-            a_v = int(m_all[-1].group(1)); op = m_all[-1].group(2); b_v = int(m_all[-1].group(3))
-            if   op == '+': truth_val = a_v + b_v
-            elif op == '-': truth_val = a_v - b_v
-            elif op == '*': truth_val = a_v * b_v
-            elif op == '/': truth_val = (a_v // b_v) if b_v != 0 else 0
-            else:           truth_val = 0
-            truth_digits = [int(ch) for ch in str(truth_val)]
-            # positions (t indices) that PREDICT the result digits after '='
-            pos_list = []
-            j = eq + 1
-            while j < end_limit and ids_b[j] in digit_ids:
-                t_idx = j - 1  # time t that predicts ids_b[j]
-                if 0 <= t_idx < Tm1:
-                    pos_list.append(t_idx)
-                j += 1
-            if not pos_list:
-                continue
-            # align lengths safely
-            L = min(len(pos_list), len(truth_digits))
-            if L == 0:
-                continue
-            logits_digits = all_logits[b, pos_list[:L], :][:, digit_ids]  # (L, 10)
-            target_digits = torch.tensor(truth_digits[:L], device=targets.device, dtype=torch.long)  # 0..9
-            honesty_terms.append(F.cross_entropy(logits_digits, target_digits))
+            for eq in eq_positions:
+                text_b = tok.decode([t for t in ids_b[:eq+1] if t not in (tok.pad_id, tok.eos_id)])
+                # Use the match that ends at *this* '=' (the last one before eq)
+                m_all = list(re.finditer(r"(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=", text_b))
+                if not m_all:
+                    continue
+                m = m_all[-1]
+                a_v, op, b_v = int(m.group(1)), m.group(2), int(m.group(3))
+                if   op == '+': truth_val = a_v + b_v
+                elif op == '-': truth_val = a_v - b_v
+                elif op == '*': truth_val = a_v * b_v
+                elif op == '/': truth_val = (a_v // b_v) if b_v != 0 else 0
+                else:           truth_val = 0
+                truth_digits = [int(ch) for ch in str(truth_val)]
+                # positions of result digits
+                pos_list = []
+                j = eq + 1
+                while j < end_limit and ids_b[j] in digit_ids:
+                    t_idx = j - 1
+                    if 0 <= t_idx < Tm1:
+                        pos_list.append(t_idx)
+                    j += 1
+                if not pos_list:
+                    continue
+                L = min(len(pos_list), len(truth_digits))
+                logits_digits = all_logits[b, pos_list[:L], :][:, digit_ids]
+                target_digits = torch.tensor(truth_digits[:L], device=targets.device, dtype=torch.long)
+                honesty_terms.append(F.cross_entropy(logits_digits, target_digits))
         honesty_loss = (torch.stack(honesty_terms).mean() if honesty_terms else ce_loss.detach()*0.0)
         total_loss = ce_loss + lambda_hon * honesty_loss
     else:
@@ -750,7 +784,7 @@ def main():
             ins, outs = generate_countdown_data(config)
             if not ins: raise RuntimeError("Data generation failed to produce any samples.")
             logging.info(f"Saving generated data to: {cache_filename}")
-            torch.save({'ins': ins, 'outs': outs}, cache_filename)
+            safe_torch_save({'ins': ins, 'outs': outs}, cache_filename)
         if is_ddp: dist.barrier()
 
         logging.info(f"[RANK {global_rank}] Loading data from {cache_filename}")
@@ -791,9 +825,17 @@ def main():
         scaler    = torch.cuda.amp.GradScaler(enabled=(use_amp and not use_bf16))
 
         loader_num_workers = int(HPARAMS.get("num_workers", min(4, cpu_count())))
-        loader_args = {'batch_size': config['batch_size'], 'num_workers': loader_num_workers, 'pin_memory': device.type=='cuda'}
+        # Avoid zero-batch ranks: drop_last only if we have at least one full batch
+        effective_bs = config['batch_size']
+        drop_last_train = len(tr) >= effective_bs
+        loader_args = {'batch_size': effective_bs, 'num_workers': loader_num_workers, 'pin_memory': device.type=='cuda'}
         train_sampler = DistributedSampler(tr, shuffle=True) if is_ddp else None
-        train_loader = DataLoader(tr, sampler=train_sampler, shuffle=(not is_ddp), drop_last=True, persistent_workers=(loader_num_workers > 0), **loader_args)
+        train_loader = DataLoader(
+            tr, sampler=train_sampler, shuffle=(not is_ddp),
+            drop_last=drop_last_train, persistent_workers=(loader_num_workers > 0), **loader_args
+        )
+        if is_ddp and len(train_loader) == 0:
+            raise RuntimeError(f"Rank {global_rank}: no training batches. Reduce batch_size or disable drop_last.")
         val_loader_eval = DataLoader(va, shuffle=False, **loader_args) if global_rank == 0 else None
 
         model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], ml, tok.pad_id, use_grad_ckpt=config['use_gradient_checkpointing']).to(device)
@@ -831,6 +873,7 @@ def main():
             logging.info(log_msg)
 
         logging.info(f"Starting training on rank {global_rank}...")
+        ckpt_path = os.path.join(archive_dir, tag("best_model.pt"))
         history = defaultdict(list); best_val_loss, patience_counter = float('inf'), 0
         stop_tensor = torch.tensor(0, device=device)
         
@@ -849,7 +892,10 @@ def main():
                 logging.info(f"Epoch {ep+1:04d} | Train loss {tr_loss:.4f} | Val loss {current_val_loss:.4f}")
                 if current_val_loss < best_val_loss:
                     best_val_loss, patience_counter = current_val_loss, 0
-                    torch.save({"state": (model.module.state_dict() if is_ddp else model.state_dict()), "config": config}, tag("best_model.pt"))
+                    safe_torch_save(
+                        {"state": (model.module.state_dict() if is_ddp else model.state_dict()), "config": config},
+                        ckpt_path
+                    )
                     logging.info(f"  -> New best val loss. Checkpoint saved.")
                 else:
                     patience_counter += 1
@@ -862,7 +908,7 @@ def main():
         if global_rank == 0:
             plot_training_results(history, filename=tag("countdown_training_plot.png"))
             logging.info("\nLoading best model for final evaluation...")
-            ckpt = torch.load(tag("best_model.pt"), map_location=device)
+            ckpt = torch.load(ckpt_path, map_location=device)
             final_model = DecoderOnly(tok.vocab_size, config['d_model'], config['n_heads'], config['n_layers'], ml, tok.pad_id, False).to(device)
             final_model.load_state_dict(ckpt['state'])
             metrics = evaluate_program_metrics(final_model, tok, val_loader_eval, device, config['max_output_len'])
